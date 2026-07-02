@@ -1,0 +1,62 @@
+{
+  "name": "unitopia-wiki-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline MCP + RAG server over the Unitopia MUD wiki (OKF knowledge bundle). BM25 retrieval in pure JS — no ollama, no embedding model, no native deps, no internet at run time.",
+  "bin": {
+    "unitopia-kb-mcp": "bin/unitopia-kb-mcp.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "data"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "crawl": "tsx src/crawler/index.ts",
+    "crawl:full": "tsx src/crawler/index.ts --full",
+    "enrich": "tsx src/enrich.ts",
+    "fix-escapes": "tsx src/fixEscapes.ts",
+    "ingest": "tsx src/ingest.ts",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "start:auto": "node dist/ingest.js --if-missing && node dist/server.js",
+    "mcp:stdio": "node dist/mcp/stdio.js",
+    "mcp:stdio:dev": "tsx src/mcp/stdio.ts",
+    "mcp:http": "node dist/mcp/http.js",
+    "mcp:http:dev": "tsx watch src/mcp/http.ts",
+    "build:data": "tar -czf data/unitopia-kb.tar.gz -C knowledgebase --exclude=_wikitext unitopia"
+  },
+  "dependencies": {
+    "@langchain/community": "^0.3.30",
+    "@langchain/core": "^0.3.40",
+    "@langchain/langgraph": "^0.2.55",
+    "@langchain/ollama": "^0.2.0",
+    "@langchain/textsplitters": "^1.0.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "gray-matter": "^4.0.3",
+    "langchain": "^0.3.15",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2",
+    "zod": "^3.24.1"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "hnswlib-node": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/turndown": "^5.0.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

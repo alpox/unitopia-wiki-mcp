@@ -1,0 +1,14 @@
+# Dependencies & build output
+node_modules/
+dist/
+
+# Runtime KB is shipped compressed as data/unitopia-kb.tar.gz (tracked) and
+# extracted on first run; the raw tree and any vector index are NOT committed.
+knowledgebase/
+index/
+models/
+index.nomic-backup/
+
+# Scratch
+*.log
+.DS_Store

@@ -1,0 +1,7 @@
+node_modules
+dist
+index
+knowledgebase
+data
+.env
+npm-debug.log

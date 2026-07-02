@@ -1,0 +1,89 @@
+services:
+  ollama:
+    image: ollama/ollama:rocm
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      # This project directory (including the knowledge bundle) mapped in.
+      - .:/workspace
+      # Persist downloaded models across restarts.
+      - ollama-models:/root/.ollama
+    # AMD GPU passthrough (ROCm).
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    security_opt:
+      - seccomp:unconfined
+
+  # RAG-enabled OpenAI-compatible server (LangGraph + qwen3 + Unitopia OKF KB).
+  rag:
+    build: .
+    container_name: unitopia-rag
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      CHAT_MODEL: qwen3:30b-a3b
+      EMBED_MODEL: nomic-embed-text
+      SERVED_MODEL_ID: qwen3-unitopia-rag
+      KB_DIR: /knowledgebase/unitopia
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      # The crawled OKF knowledge bundle (read-only).
+      - ./knowledgebase:/knowledgebase:ro
+      # Persist the embedded vector index across restarts.
+      - rag-index:/index
+
+  # MCP server (streamable-HTTP) over the same KB — for Claude/ChatGPT/Gemini.
+  # Reuses the rag image and the shared vector index; starts after `rag` so the
+  # index is already built.
+  mcp:
+    build: .
+    container_name: unitopia-mcp
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - rag
+    command: ["npm", "run", "mcp:http"]
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      EMBED_MODEL: nomic-embed-text
+      KB_DIR: /knowledgebase/unitopia
+      MCP_PORT: "8090"
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./knowledgebase:/knowledgebase:ro
+      # Same persisted index the rag service builds.
+      - rag-index:/index
+
+  # Qwen Code CLI, pre-wired to the Unitopia RAG server (OpenAI-compatible auth
+  # is pre-selected in the image's ~/.qwen/settings.json). Use it with:
+  #   docker compose exec qwen-code qwen
+  qwen-code:
+    build: ./qwen-code
+    container_name: qwen-code
+    depends_on:
+      - rag
+    environment:
+      # Point Qwen Code at the RAG-enabled OpenAI-compatible server (overrides
+      # the image defaults with the in-network service hostname).
+      OPENAI_BASE_URL: http://rag:8080/v1
+      OPENAI_API_KEY: local-no-key-needed
+      OPENAI_MODEL: qwen3-unitopia-rag
+    volumes:
+      # Your project directory (incl. knowledge bundle) available inside Qwen Code.
+      - .:/workspace
+    stdin_open: true
+    tty: true
+
+volumes:
+  ollama-models:
+  rag-index:
