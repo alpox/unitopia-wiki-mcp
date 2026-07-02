@@ -2,7 +2,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
-import { listRooms, routeOnPage, pageMaps, deumlaut, roomTokens, tokenOverlap, type RouteResult } from "./mapGraph.js";
+import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type RouteResult, type RouteStep } from "./mapGraph.js";
 
 /**
  * Builds and serves a room→page index so a "wie komme ich von X nach Y" query
@@ -53,6 +53,10 @@ export interface RouteCandidates {
   hint: string | null;
   pages: { page: string; rooms: string[] }[];
 }
+
+/** A directed edge in the cross-page graph: leave `exit` on the current page,
+ *  arrive at `entry` on page `to`. */
+interface PageEdge { to: string; exit: string; entry: string; }
 
 export class NavIndex {
   private rooms: { page: string; name: string }[];
@@ -181,7 +185,8 @@ export class NavIndex {
     const hint = tc.hint ?? fc.hint;
     const fm = this.matchesByPage(fromQ), tm = this.matchesByPage(toQ);
     const shared = [...fm.keys()].filter((p) => tm.has(p));
-    if (!shared.length) return { ok: false };
+    // No single page holds both endpoints → the trip spans several maps.
+    if (!shared.length) return this.routeCrossPage(fromQ, toQ);
     // Is an endpoint its OWN area (a map page, e.g. "Borsippa")? Then it's a
     // cross-area trip and the location hint — usually the START's region — must
     // not pin us to the wrong page. For a within-area destination ("Hafen" in
@@ -216,7 +221,123 @@ export class NavIndex {
       const r = await this.routeByForms(p, fc.forms, toForms);
       if (r.ok) { tried = true; return r; }
     }
+    // Endpoints share a page by name but no path connects them there (e.g. two
+    // rooms that merely happen to co-occur) — try stitching across maps instead.
+    const cross = await this.routeCrossPage(fromQ, toQ);
+    if (cross.ok) return cross;
     return { ok: false, ambiguous: !tried || scored.length > 0 };
+  }
+
+  // --- Cross-page routing (paths that span several ASCII maps) --------------
+  // A directed page edge: leave `from` via room `exit`, arrive on `to` at room
+  // `entry`. Built from RECIPROCAL legend links between two map pages (A has a
+  // gateway room linking to B and B has one linking back to A). One-directional
+  // links — often connections that only exist on the big image maps — are
+  // skipped, per the "ignore image-only links for now" requirement.
+  private pageEdges?: Map<string, PageEdge[]>;
+
+  private async ensurePageGraph(): Promise<void> {
+    if (this.pageEdges) return;
+    const root = path.resolve(config.kbDir);
+    const isMapPage = (p: string) => this.roomsByPage.has(p);
+    // Gateway rooms per page, filtered to targets that are themselves map pages.
+    const linksByPage = new Map<string, { name: string; targets: string[] }[]>();
+    for (const page of this.roomsByPage.keys()) {
+      const file = path.join(root, `${page}.md`);
+      if (!existsSync(file)) continue;
+      const gws = pageLinks(await readFile(file, "utf8"))
+        .map((g) => ({ name: g.name, targets: g.targets.filter(isMapPage) }))
+        .filter((g) => g.targets.length);
+      if (gws.length) linksByPage.set(page, gws);
+    }
+    const edges = new Map<string, PageEdge[]>();
+    const add = (from: string, e: PageEdge) => {
+      const a = edges.get(from) ?? [];
+      if (!a.some((x) => x.to === e.to && x.exit === e.exit && x.entry === e.entry)) a.push(e);
+      edges.set(from, a);
+    };
+    for (const [page, gws] of linksByPage) {
+      for (const g of gws) {
+        // A gateway lists its links as [immediate neighbour, …distal destinations]:
+        // e.g. Tadmor's Westtor → [handelsweg-borsippa, borsippa], where the road
+        // is the neighbour and the city is where the road leads. Only the FIRST
+        // target is a real adjacency; using the rest would build a teleport edge
+        // that skips the road maps the user wants traversed.
+        const tgt = g.targets[0];
+        if (tgt === page) continue;
+        const back = (linksByPage.get(tgt) ?? []).filter((bg) => bg.targets[0] === page || bg.targets.includes(page));
+        if (!back.length) continue; // no reciprocal ASCII link → skip
+        // Entry room on `tgt` = the reciprocal gateway whose name best matches
+        // the exit room's (Westtor ↔ "Westtor von Tadmor"); else the first.
+        const gTok = roomTokens(g.name);
+        const entry = [...back].sort((a, b) => Number(tokenOverlap(gTok, b.name)) - Number(tokenOverlap(gTok, a.name)))[0];
+        add(page, { to: tgt, exit: g.name, entry: entry.name });
+      }
+    }
+    this.pageEdges = edges;
+  }
+
+  /**
+   * Route across several ASCII map pages. Finds the shortest chain of pages from
+   * a page containing `fromQ` to one containing `toQ` (BFS over the reciprocal
+   * gateway graph), then stitches the per-page routes together, inserting a
+   * crossing step at every page boundary. Used as a fallback when no single page
+   * holds both endpoints.
+   */
+  async routeCrossPage(fromQ: string, toQ: string, maxPages = 5): Promise<RouteResult> {
+    await this.ensurePageGraph();
+    const fc = this.candidates(fromQ), tc = this.candidates(toQ);
+    const starts = new Set(this.matchesByPage(fromQ).keys());
+    const dests = new Set(this.matchesByPage(toQ).keys());
+    if (!starts.size || !dests.size) return { ok: false };
+    // BFS over pages (shortest number of maps). Multi-source from every start
+    // page; stop at the first dest page that is not itself a start page.
+    const prev = new Map<string, { from: string; edge: PageEdge } | null>();
+    const depth = new Map<string, number>();
+    const q: string[] = [];
+    for (const s of starts) { prev.set(s, null); depth.set(s, 1); q.push(s); }
+    let goal: string | null = null;
+    while (q.length) {
+      const cur = q.shift()!;
+      if (dests.has(cur) && !starts.has(cur)) { goal = cur; break; }
+      if ((depth.get(cur) ?? 0) >= maxPages) continue;
+      for (const e of this.pageEdges!.get(cur) ?? []) {
+        if (!prev.has(e.to)) { prev.set(e.to, { from: cur, edge: e }); depth.set(e.to, (depth.get(cur) ?? 0) + 1); q.push(e.to); }
+      }
+    }
+    if (!goal) return { ok: false };
+    // Reconstruct the page chain: [{P0}, {P1,edge0}, …]; edge_i connects P_{i-1}→P_i.
+    const chain: { page: string; edge?: PageEdge }[] = [];
+    let cur: string | null = goal;
+    while (cur !== null) {
+      const link: { from: string; edge: PageEdge } | null = prev.get(cur) ?? null;
+      chain.unshift({ page: cur, edge: link?.edge });
+      cur = link ? link.from : null;
+    }
+    // Stitch per-page legs.
+    const steps: RouteStep[] = [];
+    const asciiParts: string[] = [];
+    const areaName = (slug: string) => slug.split("/").pop()!.replace(/-/g, " ");
+    for (let i = 0; i < chain.length; i++) {
+      const page = chain[i].page;
+      const entry = i === 0 ? null : chain[i].edge!.entry; // arrive here
+      const exit = i === chain.length - 1 ? null : chain[i + 1].edge!.exit; // leave here
+      const fromForms = i === 0 ? fc.forms : [entry!];
+      const toForms = i === chain.length - 1 ? tc.forms : [exit!];
+      const leg = await this.routeByForms(page, fromForms, toForms);
+      if (!leg.ok) return { ok: false }; // this page-path doesn't actually connect
+      if (i > 0) steps.push({ dir: null, hidden: false, transition: `Übergang nach ${areaName(page)} (${entry})`, toName: entry });
+      steps.push(...(leg.steps ?? []));
+      if (leg.ascii) asciiParts.push(`— ${areaName(page)} —\n${leg.ascii}`);
+    }
+    return {
+      ok: true,
+      from: fromQ,
+      to: toQ,
+      steps,
+      clear: false, // a cross-page trip always has crossings
+      ascii: asciiParts.join("\n\n"),
+    };
   }
 
   /** True if `name` corresponds to a map page (its own area), e.g. "Borsippa". */

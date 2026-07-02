@@ -22,6 +22,8 @@
     "fix-escapes": "tsx src/fixEscapes.ts",
     "ingest": "tsx src/ingest.ts",
     "dev": "tsx watch src/server.ts",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "audit:maps": "tsx src/nav/audit.ts",
     "build": "tsc -p tsconfig.json",
     "prepare": "tsc -p tsconfig.json",
     "start": "node dist/server.js",

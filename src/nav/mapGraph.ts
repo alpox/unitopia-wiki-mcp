@@ -8,9 +8,18 @@
  */
 
 const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬";
-const CLS = new RegExp(`[\\s o~|/\\\\.'\\-+0-9A-Z˄˅<>▼◄►▲${BOX}]`);
+// Underscore appears as map decoration on some maps (e.g. "\_'\_" diagonals on
+// the Burg Tregyln map). It carries no direction, but it must be an allowed
+// grid char or the row fails the whole-line class test and splits the map.
+const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+0-9A-Z˄˅<>▼◄►▲${BOX}]`);
+// A map row must contain at least one connector glyph (otherwise a row of pure
+// labels/spaces would be mistaken for map art). Box-drawing chars count too:
+// maps drawn with │─┌┼ often have corner-only rows ("┌┼┐", "┌┘ ' ˄") that carry
+// no ASCII wire char — excluding them here fragments such maps (e.g. Burg
+// Tregyln), scattering node markers away from their legend so rooms don't resolve.
+const WIRECH = new RegExp(`[o~|/\\\\\\-${BOX}]`);
 const isMapLine = (l: string) =>
-  l.length > 4 && /[o~|/\\-]/.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
+  l.length > 4 && WIRECH.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
 const isLegendLine = (l: string) => /^\s*([0-9]{1,2}|[A-Z~])\s+\S/.test(l);
 // A map row that holds ONLY a node label (a lone gate/number, e.g. "O" or "4"
 // on its own line) has no wire char, so isMapLine rejects it — which would split
@@ -415,6 +424,38 @@ export function pageMaps(md: string): PageMap[] {
     .filter((m) => m.ascii.trim().length > 0);
 }
 
+/** A legend gateway room and the KB map pages it links to (raw slugs, no ".md"),
+ *  e.g. Tadmor's "W Westtor" → ["handelsweg-borsippa", "borsippa"]. Used to build
+ *  the cross-page graph so a route can span several ASCII maps. */
+export interface PageLink { label: string; name: string; targets: string[]; }
+export function pageLinks(md: string): PageLink[] {
+  const out: PageLink[] = [];
+  const rowRe = /^\s*([0-9]{1,3}|[A-Z]{1,2}[0-9]?|~)\s+(\S.*)$/;
+  // Pull every "](/some/page.md …)" target out of a legend line.
+  const grab = (text: string, set: Set<string>) => {
+    for (const m of text.matchAll(/\]\((\/[^)\s]+?)\.md[^)]*\)/g))
+      set.add(decodeURIComponent(m[1]).replace(/^\/+/, ""));
+  };
+  let cur: { label: string; name: string; set: Set<string> } | null = null;
+  const flush = () => { if (cur && cur.set.size) out.push({ label: cur.label, name: cur.name, targets: [...cur.set] }); cur = null; };
+  for (const ln of md.split("\n")) {
+    const m = rowRe.exec(ln);
+    if (m) {
+      flush();
+      const set = new Set<string>(); grab(m[2], set);
+      cur = { label: m[1], name: cleanName(m[2]), set };
+    } else if (cur && /^\s*[([]/.test(ln)) {
+      grab(ln, cur.set); // parenthetical continuation of the previous legend row
+    } else if (ln.trim() === "") {
+      continue; // blank line: keep the current row open (legends have blank gaps)
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return out;
+}
+
 /** List the labelled rooms on a page (for the nav room index). */
 export function listRooms(md: string): { name: string; label: string }[] {
   const out: { name: string; label: string }[] = [];
@@ -434,4 +475,94 @@ export function formatRoute(r: RouteResult): string {
   else out += `\n\n(Enthält nicht-offensichtliche Stellen oder Kartenübergänge – kein einzelner kopierbarer Befehl möglich.)`;
   if (r.ascii) out += `\n\nKartenausschnitt des Weges:\n\`\`\`\n${r.ascii}\n\`\`\``;
   return out;
+}
+
+/** Water/terrain name fragments — a node whose name matches these should be a
+ *  dead-end tile you step onto, NOT a through-corridor. If such a node has a
+ *  high degree it's usually a crossing the parser wrongly wired through. */
+const WATER_RE = /fluss|ufer|dijala|graben|bucht|passage|kanal|see|teich|wasser|moat|steg|furt|brücke|bruecke/i;
+
+export interface PageDiagnostics {
+  groups: number;
+  nodes: number;
+  namedNodes: number;
+  edges: number;          // undirected edge count
+  hiddenEdges: number;    // edges the tracer couldn't assign a compass dir
+  isolated: number;       // nodes with no edges at all
+  components: number;     // connected components (fragmentation signal)
+  maxDegree: number;
+  maxDegreeName: string | null;
+  waterThrough: { name: string; label: string | null; degree: number }[]; // suspected crossing misparses
+  suspicion: number;      // heuristic rank score, higher = look here first
+}
+
+/** Build the graph for a page and report structural health signals, without
+ *  routing. Used by the offline audit to rank "most suspicious" maps so the
+ *  crossing-heuristic's real failure rate can be measured, not guessed. */
+export function diagnosePage(md: string): PageDiagnostics | null {
+  const groups = splitGroups(md);
+  if (!groups.length) return null;
+  const { nodes, adj } = buildGraph(groups);
+  const ids = [...nodes.keys()];
+
+  // Undirected edge set + degree per node.
+  const undirected = new Set<string>();
+  const degree = new Map<string, number>();
+  let hiddenEdges = 0;
+  for (const id of ids) {
+    for (const e of adj.get(id) ?? []) {
+      const key = id < e.to ? `${id}|${e.to}` : `${e.to}|${id}`;
+      if (!undirected.has(key)) { undirected.add(key); if (e.hidden) hiddenEdges++; }
+      degree.set(id, (degree.get(id) ?? 0) + 1);
+    }
+  }
+
+  // Connected components over the undirected graph.
+  const seen = new Set<string>();
+  let components = 0;
+  const neighbors = (id: string) => (adj.get(id) ?? []).map((e) => e.to);
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    components++;
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const nb of neighbors(cur)) if (!seen.has(nb)) stack.push(nb);
+    }
+  }
+
+  let maxDegree = 0, maxDegreeName: string | null = null;
+  const waterThrough: PageDiagnostics["waterThrough"] = [];
+  for (const id of ids) {
+    const n = nodes.get(id)!;
+    const d = degree.get(id) ?? 0;
+    if (d > maxDegree) { maxDegree = d; maxDegreeName = n.name ?? n.label; }
+    if (d > 2 && n.name && WATER_RE.test(n.name)) waterThrough.push({ name: n.name, label: n.label, degree: d });
+  }
+
+  const isolated = ids.filter((id) => (degree.get(id) ?? 0) === 0).length;
+  const namedNodes = ids.filter((id) => nodes.get(id)!.name).length;
+  // Rank: crossing-misparse signals dominate, then dead nodes and fragmentation.
+  const suspicion =
+    waterThrough.reduce((s, w) => s + w.degree, 0) * 4 +
+    hiddenEdges * 2 +
+    isolated * 3 +
+    Math.max(0, components - 1) * 2 +
+    Math.max(0, maxDegree - 4);
+
+  return {
+    groups: groups.length,
+    nodes: nodes.size,
+    namedNodes,
+    edges: undirected.size,
+    hiddenEdges,
+    isolated,
+    components,
+    maxDegree,
+    maxDegreeName,
+    waterThrough,
+    suspicion,
+  };
 }
