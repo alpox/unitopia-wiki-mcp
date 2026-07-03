@@ -34,6 +34,16 @@ reindex-full:
 data:
     npm run build:data
 
+# Compile TypeScript sources to dist/ (what the stdio MCP runs).
+build:
+    npm run build
+
+# Rebuild everything the stdio MCP serves, on the host — no docker, no embeddings
+# (BM25 mode): recompile dist/, repackage the shipped KB archive, and rebuild the
+# catalog + nav index it loads from index/. Restart the MCP afterwards.
+reindex-mcp: build data
+    EMBED_BACKEND=none node dist/ingest.js
+
 # Pull the latest wiki pages, then rebuild the shipped bundle. Commit+push data/ after.
 update: crawl data
 

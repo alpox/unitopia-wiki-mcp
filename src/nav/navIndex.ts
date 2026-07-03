@@ -54,7 +54,13 @@ async function computeNavRooms(): Promise<NavRooms> {
   const gridMaps = await loadGridMaps(root);
   for (const g of gridMaps) {
     rooms.push({ page: g.page, name: g.region });
-    for (const gw of g.gateways) rooms.push({ page: g.page, name: gw.label });
+    for (const gw of g.gateways) {
+      // A gateway is findable by its label (the room name) AND, when it carries a
+      // distinct anchor (same-image points of interest like "Weltenrand"/"Handelsfort"
+      // whose anchor is the name users actually search), by that anchor too.
+      rooms.push({ page: g.page, name: gw.label });
+      if (gw.anchor && gw.anchor !== gw.label) rooms.push({ page: g.page, name: gw.anchor });
+    }
   }
   return { rooms, gridMaps };
 }

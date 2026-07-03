@@ -59,7 +59,9 @@ async function collectMd(dir: string): Promise<string[]> {
   const out: string[] = [];
   for (const e of await readdir(dir, { withFileTypes: true })) {
     if (e.isDirectory()) {
-      if (e.name.startsWith("_")) continue;
+      // Skip `_`-artifact dirs except `_gridmaps` — its `.md` overworld-map pages
+      // are real catalog entries (title/neighbours for `fetch`); see loadDocuments.
+      if (e.name.startsWith("_") && e.name !== config.gridMapsSubdir) continue;
       out.push(...(await collectMd(path.join(dir, e.name))));
     } else if (e.name.endsWith(".md") && !RESERVED.has(e.name)) {
       out.push(path.join(dir, e.name));

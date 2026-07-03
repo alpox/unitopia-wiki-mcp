@@ -15,7 +15,11 @@ async function collectConceptFiles(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name.startsWith("_")) continue; // skip _wikitext archive etc.
+      // Skip `_`-prefixed artifact dirs (e.g. `_wikitext`), EXCEPT `_gridmaps`:
+      // its `.md` files are real, human-readable overworld-map pages that must be
+      // searchable/fetchable (only the sibling `.json` routing artifacts, ignored
+      // here since we collect `.md` only, are pure build output).
+      if (entry.name.startsWith("_") && entry.name !== config.gridMapsSubdir) continue;
       files.push(...(await collectConceptFiles(full)));
     } else if (entry.name.endsWith(".md") && !RESERVED.has(entry.name)) {
       files.push(full);
