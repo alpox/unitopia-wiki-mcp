@@ -119,7 +119,10 @@ export class NavIndex {
     const forms = [q.trim()];
     let hint: string | null = null;
     const m = /^(.*\S)\s+(?:in|im|von|vom|bei|auf|am|an)\s+(\S[\w äöüÄÖÜß-]*)$/i.exec(q.trim());
-    if (m) { forms.push(m[1].trim()); hint = deumlaut(m[2]); }
+    // Canonicalise the hint to a page slug (hyphen-joined) so it compares against
+    // page ids regardless of how the user spaced/hyphenated the area name — "foo
+    // ling yoo", "Foo-Ling-Yoo" and "foo ling yoo" all pin the `foo-ling-yoo` page.
+    if (m) { forms.push(m[1].trim()); hint = deumlaut(m[2]).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || null; }
     else {
       const words = q.trim().split(/\s+/);
       for (let i = 1; i < words.length; i++) {
