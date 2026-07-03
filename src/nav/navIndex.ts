@@ -397,8 +397,19 @@ export class NavIndex {
     // Anchor both ends to their credible pages (verbatim name, else hint-pinned)
     // so BFS starts from the real origin map and stops at the real destination —
     // not at the nearest page that merely shares a generic room name.
-    const starts = new Set(this.endpointPages(fromQ).keys());
-    const dests = new Set(this.endpointPages(toQ).keys());
+    // An overworld/grid page rarely holds the specific endpoint room — its named
+    // tiles are gateways into cities/areas, and the fine-grained destination (a
+    // Wolke, a Tempelraum) lives on the ASCII area page it links to. So when an
+    // endpoint also matches a normal (non-grid) page, treat the grid twin as
+    // TRANSIT, not a terminal: BFS then continues through the overworld into the
+    // ASCII page where the room actually is, instead of dead-ending on the grid.
+    const preferAscii = (pages: Iterable<string>): Set<string> => {
+      const all = [...pages];
+      const ascii = all.filter((p) => !this.gridByPage.has(p));
+      return new Set(ascii.length ? ascii : all);
+    };
+    const starts = preferAscii(this.endpointPages(fromQ).keys());
+    const dests = preferAscii(this.endpointPages(toQ).keys());
     if (!starts.size || !dests.size) return { ok: false };
     // BFS over pages (shortest number of maps). Multi-source from every start
     // page; stop at the first dest page that is not itself a start page.

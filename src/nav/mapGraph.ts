@@ -276,7 +276,7 @@ export function tokenOverlap(queryTokens: string[], name: string): boolean {
   return queryTokens.some((q) => r.some((x) => x.includes(q) || q.includes(x)));
 }
 
-function findNode(nodes: Map<string, GNode>, q: string, groupAnchors: string[] = []): GNode | null {
+function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>, q: string, groupAnchors: string[] = []): GNode | null {
   const ql = deumlaut(q);
   // The sub-map (group) whose heading equals an anchor, i.e. its area name.
   const groupGi = (anchor: string) => groupAnchors.findIndex((a) => a && deumlaut(a) === deumlaut(anchor));
@@ -305,10 +305,36 @@ function findNode(nodes: Map<string, GNode>, q: string, groupAnchors: string[] =
     }
     return n;
   };
-  for (const n of nodes.values()) if (n.label && n.label.toLowerCase() === ql) return resolve(n);
-  for (const n of nodes.values()) if (n.name && deumlaut(n.name) === ql) return resolve(n);
-  for (const n of nodes.values()) if (n.name && deumlaut(n.name).includes(ql)) return resolve(n);
-  return null;
+  // Score every candidate by match strength, then prefer the primary room on a
+  // tie: a numbered room (real, e.g. "9 Marktplatz (Marktschreier)") beats a
+  // letter-labelled cross-reference to the same place on another sub-map ("K
+  // Marktplatz"), and an earlier/main sub-map beats a later one. Exact full-name
+  // and exact base-name (parenthetical stripped) share the top name tier so
+  // "Marktplatz" matches "Marktplatz (Marktschreier)" as strongly as a bare
+  // "Marktplatz" — letting the numbered-primary tie-break decide.
+  // Same-label neighbours: a room drawn across several map cells (e.g. the 2×2
+  // "9" Marktplatz block) has cells that border each other, whereas a stray/
+  // erroneous lone duplicate of the number does not. Preferring the clustered
+  // cell lands the endpoint on the real room, not the misplaced glyph.
+  const sameLabelNeighbours = (n: GNode): number => {
+    if (!n.label) return 0;
+    let k = 0;
+    for (const e of adj.get(n.gid) ?? []) if (nodes.get(e.to)?.label === n.label) k++;
+    return k;
+  };
+  const base = (s: string) => deumlaut(s).replace(/\s*\(.*$/, "");
+  let best: GNode | null = null, bestScore = -1;
+  for (const n of nodes.values()) {
+    let tier = -1;
+    if (n.label && n.label.toLowerCase() === ql) tier = 4;
+    else if (n.name && (deumlaut(n.name) === ql || base(n.name) === ql)) tier = 3;
+    else if (n.name && deumlaut(n.name).includes(ql)) tier = 1;
+    if (tier < 0) continue;
+    const numbered = n.label && /^\d+$/.test(n.label) ? 1 : 0;
+    const score = tier * 1e6 + numbered * 1e4 + sameLabelNeighbours(n) * 100 + 1 / (1 + n.gi);
+    if (score > bestScore) { bestScore = score; best = n; }
+  }
+  return best ? resolve(best) : null;
 }
 
 /** Recover the wire cells connecting two graph-adjacent nodes on a grid, by a
@@ -389,7 +415,7 @@ export function routeOnPage(md: string, fromQ: string, toQ: string): RouteResult
   if (!groups.length) return { ok: false, error: "keine Karte auf dieser Seite" };
   const { nodes, adj, grids } = buildGraph(groups);
   const anchors = groups.map((g) => g.anchor);
-  const s = findNode(nodes, fromQ, anchors), t = findNode(nodes, toQ, anchors);
+  const s = findNode(nodes, adj, fromQ, anchors), t = findNode(nodes, adj, toQ, anchors);
   if (!s || !t) return { ok: false, error: `Raum nicht auf der Karte gefunden: ${!s ? fromQ : toQ}` };
   // Dijkstra: a sub-map transition is a real (≈1) move but slightly penalized
   // so that when a comparable in-map path exists it wins — without forcing a
