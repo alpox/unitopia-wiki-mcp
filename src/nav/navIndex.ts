@@ -109,13 +109,24 @@ export class NavIndex {
   }
 
   /** Candidate forms of an endpoint: the raw query, then with a trailing
-   *  location qualifier ("… in/im/von/bei Tadmor") stripped. The stripped word
-   *  is also returned as a page hint. */
+   *  location qualifier stripped, plus that location as a page hint. Two shapes:
+   *  - explicit connector: "Marktplatz in/von/bei Foo-Ling-Yoo"
+   *  - bare apposition:    "Marktplatz Foo-Ling-Yoo" — where the trailing run of
+   *    words is itself a known map page. Without this, a precise area tacked
+   *    straight onto a generic room name ("Marktplatz") would match nothing and
+   *    the endpoint would resolve to no page at all. */
   private candidates(q: string): { forms: string[]; hint: string | null } {
     const forms = [q.trim()];
     let hint: string | null = null;
     const m = /^(.*\S)\s+(?:in|im|von|vom|bei|auf|am|an)\s+(\S[\w äöüÄÖÜß-]*)$/i.exec(q.trim());
     if (m) { forms.push(m[1].trim()); hint = deumlaut(m[2]); }
+    else {
+      const words = q.trim().split(/\s+/);
+      for (let i = 1; i < words.length; i++) {
+        const slug = this.mapPageSlug(words.slice(i).join(" "));
+        if (slug) { forms.push(words.slice(0, i).join(" ")); hint = slug; break; }
+      }
+    }
     return { forms, hint };
   }
 
@@ -436,12 +447,18 @@ export class NavIndex {
     };
   }
 
+  /** The slug of `name` if it names a map page (its own area, e.g. "Borsippa"),
+   *  else null. */
+  private mapPageSlug(name: string): string | null {
+    const n = deumlaut(name).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!n) return null;
+    for (const p of this.roomsByPage.keys()) if (p.split("/").pop() === n) return n;
+    return null;
+  }
+
   /** True if `name` corresponds to a map page (its own area), e.g. "Borsippa". */
   private hasMapPage(name: string): boolean {
-    const n = deumlaut(name).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    if (!n) return false;
-    for (const p of this.roomsByPage.keys()) if (p.split("/").pop() === n) return true;
-    return false;
+    return this.mapPageSlug(name) !== null;
   }
 
   /** Try to route on ONE page, resolving endpoints via findNode over the query

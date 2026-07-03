@@ -35,14 +35,17 @@ const stateKey = (c: number, r: number, run: number) => `${c},${r},${run}`;
 export function resolveTile(g: GridMap, q: string): { col: number; row: number; name: string } | null {
   const cr = /^\s*(\d+)\s*[,;]\s*(\d+)\s*$/.exec(q);
   if (cr) return { col: +cr[1], row: +cr[2], name: `${cr[1]},${cr[2]}` };
-  const ql = deumlaut(q);
+  // Separator-insensitive, word-boundary normalization (as in NavIndex): so a
+  // gateway "Nurikomoon-Tempel" is matched by a query "Nurikomoon Tempel".
+  const norm = (s: string) => ` ${deumlaut(s).replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const ql = norm(q);
   const lastSeg = (p: string) => p.split("/").pop() ?? p;
   // Prefer an exact-ish gateway label match, then a target-page match.
   let best: { col: number; row: number; name: string } | null = null;
   let bestScore = 0;
   for (const gw of g.gateways) {
-    const label = deumlaut(gw.label);
-    const tgt = gw.target ? deumlaut(lastSeg(gw.target)) : "";
+    const label = norm(gw.label);
+    const tgt = gw.target ? norm(lastSeg(gw.target)) : "";
     let score = 0;
     if (label === ql) score = 5;
     else if (label.includes(ql) || ql.includes(label)) score = 3;
@@ -50,7 +53,8 @@ export function resolveTile(g: GridMap, q: string): { col: number; row: number; 
     if (score > bestScore) { bestScore = score; best = { col: gw.col, row: gw.row, name: gw.label }; }
   }
   if (best) return best;
-  if (deumlaut(g.region) === ql || ql.includes(deumlaut(g.region))) {
+  const reg = norm(g.region);
+  if (reg === ql || ql.includes(reg)) {
     // Central walkable, cheapest tile as a generic anchor for the whole area.
     let pick: { col: number; row: number; name: string } | null = null, pc = Infinity;
     const midC = g.cols / 2, midR = g.rows / 2;
