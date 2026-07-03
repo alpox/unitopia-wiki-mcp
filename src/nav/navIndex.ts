@@ -155,9 +155,11 @@ export class NavIndex {
   }
 
   /** Pages where this endpoint matches rooms, split into exact vs. substring
-   *  matches per page (over the raw + qualifier-stripped query forms). */
-  private matchesByPage(q: string): Map<string, { exact: Set<string>; sub: Set<string> }> {
-    const { forms } = this.candidates(q);
+   *  matches per page. Defaults to the raw + qualifier-stripped query forms;
+   *  pass `formsOverride` to match against a specific form set (e.g. the verbatim
+   *  query only). */
+  private matchesByPage(q: string, formsOverride?: string[]): Map<string, { exact: Set<string>; sub: Set<string> }> {
+    const forms = formsOverride ?? this.candidates(q).forms;
     // Separator-insensitive, word-boundary normalization: "Alt-Ware" matches
     // "Recycling-Büro (Alt Ware)", but "Tor" does NOT match inside "Brückentor".
     const norm = (s: string) => ` ${deumlaut(s).replace(/[^a-z0-9]+/g, " ").trim()} `;
@@ -177,6 +179,29 @@ export class NavIndex {
       }
     }
     return out;
+  }
+
+  /**
+   * The pages an endpoint most credibly refers to — the key to not drifting to a
+   * coincidentally-named room in the wrong area. Tiers, strongest first:
+   *  1. The verbatim query (its real, un-stripped name): "Hafen von Westgallien"
+   *     is a specific gateway on ONE map; don't let it decay into a generic
+   *     "Hafen" that matches every harbour in the world.
+   *  2. Else the qualifier-stripped forms, but pinned by a location hint when the
+   *     query carried one: "Marktplatz in Foo-Ling-Yoo" → only Foo-Ling-Yoo's
+   *     pages, not every page that happens to have a "Marktplatz".
+   *  3. Else the loose stripped-form matches (best effort).
+   */
+  private endpointPages(q: string): Map<string, { exact: Set<string>; sub: Set<string> }> {
+    const { forms, hint } = this.candidates(q);
+    const full = this.matchesByPage(q, forms.slice(0, 1));
+    if (full.size) return full;
+    const all = this.matchesByPage(q);
+    if (hint) {
+      const pinned = new Map([...all].filter(([p]) => deumlaut(p).includes(hint)));
+      if (pinned.size) return pinned;
+    }
+    return all;
   }
 
   /** Resolve one endpoint to a single room on a page, using the strongest
@@ -213,7 +238,7 @@ export class NavIndex {
   async resolveAndRoute(fromQ: string, toQ: string): Promise<RouteResult & { ambiguous?: boolean }> {
     const fc = this.candidates(fromQ), tc = this.candidates(toQ);
     const hint = tc.hint ?? fc.hint;
-    const fm = this.matchesByPage(fromQ), tm = this.matchesByPage(toQ);
+    const fm = this.endpointPages(fromQ), tm = this.endpointPages(toQ);
     const shared = [...fm.keys()].filter((p) => tm.has(p));
     // No single page holds both endpoints → the trip spans several maps.
     if (!shared.length) return this.routeCrossPage(fromQ, toQ);
@@ -355,8 +380,11 @@ export class NavIndex {
   async routeCrossPage(fromQ: string, toQ: string, maxPages = 5): Promise<RouteResult> {
     await this.ensurePageGraph();
     const fc = this.candidates(fromQ), tc = this.candidates(toQ);
-    const starts = new Set(this.matchesByPage(fromQ).keys());
-    const dests = new Set(this.matchesByPage(toQ).keys());
+    // Anchor both ends to their credible pages (verbatim name, else hint-pinned)
+    // so BFS starts from the real origin map and stops at the real destination —
+    // not at the nearest page that merely shares a generic room name.
+    const starts = new Set(this.endpointPages(fromQ).keys());
+    const dests = new Set(this.endpointPages(toQ).keys());
     if (!starts.size || !dests.size) return { ok: false };
     // BFS over pages (shortest number of maps). Multi-source from every start
     // page; stop at the first dest page that is not itself a start page.
