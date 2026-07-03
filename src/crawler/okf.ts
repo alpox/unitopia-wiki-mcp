@@ -6,7 +6,7 @@ export function normalizeTitle(title: string): string {
 }
 
 /** URL/filesystem-safe slug that still preserves German umlauts. */
-function slug(s: string): string {
+export function slug(s: string): string {
   return s
     .normalize("NFC")
     .toLowerCase()

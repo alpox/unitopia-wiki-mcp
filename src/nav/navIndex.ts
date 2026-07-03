@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type RouteResult, type RouteStep } from "./mapGraph.js";
+import { routeOnGrid, renderGridAscii } from "./grid/gridRouter.js";
+import type { GridMap } from "./grid/types.js";
 
 /**
  * Builds and serves a room→page index so a "wie komme ich von X nach Y" query
@@ -12,7 +14,21 @@ const RESERVED = new Set(["index.md", "log.md"]);
 const NAV_FILE = "navrooms.json";
 const navPath = () => path.join(config.indexDir, NAV_FILE);
 
-interface NavRooms { rooms: { page: string; name: string }[] }
+interface NavRooms { rooms: { page: string; name: string }[]; gridMaps?: GridMap[] }
+
+/** Load parsed overworld grid-map artifacts from `_gridmaps/*.json`. Shipped in
+ *  the KB tarball; skipped by the ASCII scanners (they ignore `_`-dirs). */
+async function loadGridMaps(root: string): Promise<GridMap[]> {
+  const dir = path.join(root, config.gridMapsSubdir);
+  if (!existsSync(dir)) return [];
+  const out: GridMap[] = [];
+  for (const e of await readdir(dir)) {
+    if (!e.endsWith(".json")) continue;
+    try { out.push(JSON.parse(await readFile(path.join(dir, e), "utf8")) as GridMap); }
+    catch { /* skip a malformed artifact */ }
+  }
+  return out;
+}
 
 async function collectMd(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -34,7 +50,13 @@ async function computeNavRooms(): Promise<NavRooms> {
     const conceptId = path.relative(root, file).replace(/\.md$/, "").split(path.sep).join("/");
     for (const r of listRooms(md)) rooms.push({ page: conceptId, name: r.name });
   }
-  return { rooms };
+  // Overworld grid maps: each region + its gateway tiles become routable rooms.
+  const gridMaps = await loadGridMaps(root);
+  for (const g of gridMaps) {
+    rooms.push({ page: g.page, name: g.region });
+    for (const gw of g.gateways) rooms.push({ page: g.page, name: gw.label });
+  }
+  return { rooms, gridMaps };
 }
 
 /** Build the nav index and persist it as `navrooms.json` next to the index. */
@@ -61,6 +83,7 @@ interface PageEdge { to: string; exit: string; entry: string; }
 export class NavIndex {
   private rooms: { page: string; name: string }[];
   private roomsByPage = new Map<string, string[]>();
+  private gridByPage = new Map<string, GridMap>();
   constructor(data: NavRooms) {
     this.rooms = data.rooms;
     for (const r of data.rooms) {
@@ -68,6 +91,7 @@ export class NavIndex {
       if (a) a.push(r.name);
       else this.roomsByPage.set(r.page, [r.name]);
     }
+    for (const g of data.gridMaps ?? []) this.gridByPage.set(g.page, g);
   }
   get size() { return this.rooms.length; }
 
@@ -274,7 +298,45 @@ export class NavIndex {
         add(page, { to: tgt, exit: g.name, entry: entry.name });
       }
     }
+    // Overworld grid gateways ARE the authoritative link between a raster map and
+    // a city/ASCII page (the imagemap rect), so wire them both ways directly —
+    // the city rarely links back in ASCII (it links to the gif, not an "asia"
+    // page). Entry room on the city = its room that best matches the gateway.
+    for (const grid of this.gridByPage.values()) {
+      for (const gw of grid.gateways) {
+        const tgt = gw.target;
+        if (!tgt || tgt === grid.page || !isMapPage(tgt)) continue;
+        const cityRoom = this.bestRoomOn(tgt, gw.anchor ?? gw.label) ?? gw.label;
+        add(grid.page, { to: tgt, exit: gw.label, entry: cityRoom }); // enter the city
+        add(tgt, { to: grid.page, exit: cityRoom, entry: gw.label }); // step back onto the overworld
+      }
+    }
     this.pageEdges = edges;
+  }
+
+  /** Pick the arrival room on a city map `page` for a grid gateway. You enter a
+   *  city at its gate, so prefer an actual entrance (Tor/Eingang/Stadtmauer/…),
+   *  then token overlap with the gateway name. Crucially, match against the room
+   *  name with any "-> Ziel" wayfinding annotation and parenthetical stripped, so
+   *  a room like "Bergschrein (Gemälde -> Foo-Ling-Yoo)" is NOT mistaken for the
+   *  Foo-Ling-Yoo entrance. Falls back to the primary (lowest-numbered) room. */
+  private bestRoomOn(page: string, q: string): string | null {
+    const rooms = this.roomsByPage.get(page) ?? [];
+    if (!rooms.length) return null;
+    // Drop "-> …" wayfinding hints and parentheticals before matching on names.
+    const clean = (n: string) => deumlaut(n).replace(/->.*$/, "").replace(/\(.*$/, "").trim();
+    const isGate = (n: string) => /\b(tor|tuer|eingang|stadtmauer|stadttor|hafen|portal|pforte)\b/.test(clean(n));
+    const qd = deumlaut(q), qTok = roomTokens(q);
+    let best: string | null = null, bestScore = -1;
+    for (const name of rooms) {
+      const c = clean(name);
+      let score = 0;
+      if (c && tokenOverlap(qTok, c)) score += 2;
+      if (c && (c.includes(qd) || qd.includes(c))) score += 2;
+      if (isGate(name)) score += 3; // an entrance is where you arrive from the overworld
+      if (score > bestScore) { bestScore = score; best = name; }
+    }
+    return bestScore > 0 ? best : rooms[0];
   }
 
   /**
@@ -377,6 +439,11 @@ export class NavIndex {
       .slice(0, 4);
     const out: { page: string; maps: { anchor: string; rooms: string[] }[] }[] = [];
     for (const page of ordered) {
+      const grid = this.gridByPage.get(page);
+      if (grid) {
+        out.push({ page, maps: [{ anchor: grid.region, rooms: grid.gateways.map((g) => g.label).slice(0, 14) }] });
+        continue;
+      }
       const file = path.join(path.resolve(config.kbDir), `${page}.md`);
       if (!existsSync(file)) continue;
       const maps = pageMaps(await readFile(file, "utf8"))
@@ -390,6 +457,8 @@ export class NavIndex {
   /** Render ONE named ASCII sub-map (its art + legend) on a page — the
    *  deterministic half once the LLM has chosen page + heading anchor. */
   async renderNamedMap(page: string, anchorQ: string): Promise<{ area: string; block: string } | null> {
+    const grid = this.gridByPage.get(page);
+    if (grid) return { area: grid.region, block: renderGridAscii(grid) };
     const file = path.join(path.resolve(config.kbDir), `${page}.md`);
     if (!existsSync(file)) return null;
     const maps = pageMaps(await readFile(file, "utf8"));
@@ -402,8 +471,11 @@ export class NavIndex {
     return { area: m.anchor, block: m.ascii + (legend ? `\n\n${legend}` : "") };
   }
 
-  /** Compute a route between two EXACT room names on a known page. */
+  /** Compute a route between two EXACT room names on a known page. Grid (raster
+   *  overworld) pages route over their tile graph; ASCII pages over their art. */
   async routeByNames(page: string, from: string, to: string): Promise<RouteResult> {
+    const grid = this.gridByPage.get(page);
+    if (grid) return routeOnGrid(grid, from, to);
     const file = path.join(path.resolve(config.kbDir), `${page}.md`);
     if (!existsSync(file)) return { ok: false, error: "Kartenseite nicht gefunden" };
     return routeOnPage(await readFile(file, "utf8"), from, to);

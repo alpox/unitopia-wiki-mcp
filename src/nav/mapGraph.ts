@@ -21,11 +21,13 @@ const WIRECH = new RegExp(`[o~|/\\\\\\-${BOX}]`);
 const isMapLine = (l: string) =>
   l.length > 4 && WIRECH.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
 const isLegendLine = (l: string) => /^\s*([0-9]{1,2}|[A-Z~])\s+\S/.test(l);
-// A map row that holds ONLY a node label (a lone gate/number, e.g. "O" or "4"
-// on its own line) has no wire char, so isMapLine rejects it — which would split
-// one map into two. Treat it as interior map content when it directly continues
-// the block (previous line is map/label), so such maps stay whole.
+// A map row that holds ONLY node labels (gates/numbers, e.g. "O" or "1     2"
+// above the wires they head) has no wire char, so isMapLine rejects it — which
+// would drop those rooms or split the map. Treat such a row as map content when
+// it directly borders the block, so the gate nodes are created and wired.
+// `isLoneLabel` = exactly one label; `isLabelRow` = one or more (e.g. "1     2").
 const isLoneLabel = (l: string) => /^\s*[A-Z0-9]{1,3}\s*$/.test(l);
+const isLabelRow = (l: string) => l.trim() !== "" && /^(?:\s*[A-Z0-9]{1,3})+\s*$/.test(l);
 const anchorOf = (name: string) => name.trim().replace(/\s+/g, "_");
 function cleanName(s: string): string {
   return s
@@ -75,9 +77,13 @@ function splitGroups(md: string): MapGroup[] {
     const h = /^#{1,6}\s+\[?([^\]\n]+?)\]?(\(#?[^)]*\))?\s*$/.exec(lines[i]);
     if (h && !isMapLine(lines[i])) curHeading = anchorOf(h[1].replace(/\]\(.*$/, ""));
     if (isMapLine(lines[i])) {
-      const start = i;
+      let start = i;
+      // Pull in leading label-only rows that head the wires directly below them
+      // (e.g. the "1     2" gate row atop Foo-Ling-Yoo's Stadtplan) — they carry
+      // real node labels but no wire char, so isMapLine skips them otherwise.
+      while (start > 0 && isLabelRow(lines[start - 1])) start--;
       while (i < lines.length && (isMapLine(lines[i]) || lines[i].trim() === "" ||
-        (isLoneLabel(lines[i]) && i > start && lines[i - 1].trim() !== "" && (isMapLine(lines[i - 1]) || isLoneLabel(lines[i - 1]))))) i++;
+        (isLabelRow(lines[i]) && i > start && lines[i - 1].trim() !== "" && (isMapLine(lines[i - 1]) || isLabelRow(lines[i - 1]))))) i++;
       let end = i; while (end > start && lines[end - 1].trim() === "") end--;
       const mapLines = lines.slice(start, end);
       const labelName = new Map<string, string>(), labelAnchor = new Map<string, string[]>();

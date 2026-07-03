@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
-import { httpGet, httpGetJson, httpPostFormJson, sleep } from "./http.js";
+import { httpGet, httpGetBuffer, httpGetJson, httpPostFormJson, sleep } from "./http.js";
 import { normalizeTitle } from "./okf.js";
 
 /** A namespace as reported by the MediaWiki siteinfo API. */
@@ -203,6 +203,15 @@ export async function parsePage(
 /** Build the canonical browser URL for a wiki page. */
 export function pageUrl(site: SiteInfo, title: string): string {
   return site.server + site.articlePath.replace("$1", title.replace(/ /g, "_"));
+}
+
+/** Download an upload (image) by filename via `Special:FilePath`, which 302s to
+ *  the current file regardless of the wiki's upload-dir layout. */
+export async function fetchImage(site: SiteInfo, filename: string): Promise<Buffer> {
+  const url = pageUrl(site, `Special:FilePath/${filename}`);
+  const { status, body } = await httpGetBuffer(url);
+  if (status < 200 || status >= 300) throw new Error(`HTTP ${status} for image "${filename}"`);
+  return body;
 }
 
 /** Quick reachability check used before falling back to HTML scraping. */

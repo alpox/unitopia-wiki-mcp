@@ -2,6 +2,7 @@
   "name": "unitopia-wiki-mcp",
   "version": "1.0.0",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "description": "Offline MCP + RAG server over the Unitopia MUD wiki (OKF knowledge bundle). BM25 retrieval in pure JS — no ollama, no embedding model, no native deps, no internet at run time.",
   "bin": {
@@ -18,6 +19,7 @@
   "scripts": {
     "crawl": "tsx src/crawler/index.ts",
     "crawl:full": "tsx src/crawler/index.ts --full",
+    "crawl:gridmaps": "tsx src/crawler/gridMapsMain.ts",
     "enrich": "tsx src/enrich.ts",
     "fix-escapes": "tsx src/fixEscapes.ts",
     "ingest": "tsx src/ingest.ts",

@@ -61,6 +61,37 @@ export async function httpGet(
   });
 }
 
+/**
+ * GET raw bytes (for downloading images). Follows redirects like `httpGet` but
+ * keeps the body as a Buffer instead of decoding it as UTF-8.
+ */
+export async function httpGetBuffer(url: string, redirectsLeft = 5): Promise<{ status: number; body: Buffer }> {
+  const u = new URL(url);
+  const isHttps = u.protocol === "https:";
+  const mod = isHttps ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = mod.request(
+      u,
+      { method: "GET", headers: { "User-Agent": USER_AGENT, Accept: "*/*" }, ...(isHttps ? { rejectUnauthorized: false } : {}) },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const location = res.headers.location;
+        if (status >= 300 && status < 400 && location && redirectsLeft > 0) {
+          res.resume();
+          resolve(httpGetBuffer(new URL(location, u).toString(), redirectsLeft - 1));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c as Buffer));
+        res.on("end", () => resolve({ status, body: Buffer.concat(chunks) }));
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(30_000, () => req.destroy(new Error(`timeout: ${url}`)));
+    req.end();
+  });
+}
+
 /** GET and parse JSON, throwing on non-2xx or unparseable bodies. */
 export async function httpGetJson<T>(url: string): Promise<T> {
   const res = await httpGet(url);

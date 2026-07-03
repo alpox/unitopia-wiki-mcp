@@ -60,6 +60,23 @@ export const config = {
   /** Base URL of the Unitopia MediaWiki (HTTP-only, expired TLS cert). */
   wikiBaseUrl: process.env.WIKI_BASE_URL ?? "http://unitopia.intelligense.de",
 
+  /** Subdir (under kbDir) holding parsed overworld grid-map artifacts. Ships in
+   *  the KB tarball (build:data excludes only `_wikitext`). */
+  gridMapsSubdir: "_gridmaps",
+
+  /** Overworld regions (as keyed in Vorlage:Kachelkarte) to parse from gifs into
+   *  routable grid maps: the 17 tile-overworlds + the 10 "Verfluchter Wald"
+   *  segments. Override via GRID_MAP_REGIONS (comma-separated) for a subset. */
+  gridMapRegions: (process.env.GRID_MAP_REGIONS ?? [
+    "Asia", "Drachenland", "Amerindia", "Nankea", "Wurzelwald", "Vaniorh",
+    "Midgard2012", "Gallien2012", "Dörrland2012", "Kreta", "Phrygia", "Stratos",
+    "Veldergautland", "Märchenland", "Okeanos", "Kokosinseln", "Inseln2012",
+    "Verfluchter Wald", "Verfluchter Wald Welle", "Verfluchter Wald Kreis",
+    "Verfluchter Wald Stern", "Verfluchter Wald U", "Verfluchter Wald Baum",
+    "Verfluchter Wald Doppelkreis", "Verfluchter Wald Ring",
+    "Verfluchter Wald Fünfeck", "Verfluchter Wald Mond",
+  ].join(",")).split(",").map((s) => s.trim()).filter(Boolean),
+
   /** Model id advertised over the OpenAI API (what Qwen Code targets). */
   servedModelId: process.env.SERVED_MODEL_ID ?? "qwen3-unitopia-rag",
 

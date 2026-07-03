@@ -23,6 +23,7 @@ import {
   type ConceptDoc,
 } from "./okfWriter.js";
 import { loadState, saveState } from "./state.js";
+import { buildGridMaps } from "./gridMaps.js";
 
 const DELAY_MS = Number(process.env.CRAWL_DELAY_MS ?? 250);
 const BATCH_SIZE = Number(process.env.CRAWL_BATCH_SIZE ?? 50);
@@ -238,6 +239,14 @@ async function main() {
   }
   await writeIndexes(bundleDir, descriptions, titles);
   await appendLog(bundleDir, logEntries);
+
+  // Parse overworld raster maps (gifs) into routable grid artifacts. Guarded:
+  // never let a map-parsing hiccup fail the whole crawl.
+  try {
+    await buildGridMaps(bundleDir, site);
+  } catch (err) {
+    console.warn(`[crawl] grid-map build failed: ${err}`);
+  }
 
   state.lastRun = runStart;
   await saveState(bundleDir, state);
