@@ -139,12 +139,15 @@ export interface RouteToolResult {
   text?: string;
   ambiguous?: boolean;
   candidates?: { hint: string | null; pages: { page: string; rooms: string[] }[] };
+  /** Advice for the model on how to recover from a failed/ambiguous call. */
+  guidance?: string;
   error?: string;
 }
 
-/** Deterministic room-to-room routing. With `page` given, route between two
- *  exact room names on that page; otherwise auto-resolve the shared area page.
- *  On ambiguity return candidate pages+rooms so the model re-calls with `page`. */
+/** Deterministic room-to-room routing. Without `page`, auto-resolves the
+ *  endpoints and routes ACROSS maps when needed (city → overworld → area). With
+ *  `page`, routes strictly within that one map (use only to disambiguate two
+ *  rooms on the same map). On failure, returns candidate pages + guidance. */
 export async function route(
   b: Backends,
   args: { from: string; to: string; page?: string },
@@ -170,9 +173,12 @@ export async function route(
     };
   }
 
-  // Not resolved deterministically → hand back candidates to disambiguate.
+  // Not resolved deterministically → hand back candidates + recovery guidance.
   const candidates = b.nav.routeCandidates(args.from, args.to);
-  return { ok: false, ambiguous: true, candidates, error: r.error };
+  const guidance = args.page
+    ? `Routing was restricted to the single map '${args.page}', where one of the rooms does not exist — it is likely on a different map. Re-call WITHOUT 'page' (the router stitches cross-map/area trips itself), adding the area to each room name if known (e.g. '${args.from} in <Area>').`
+    : "No single map holds both rooms under these names. Re-call WITHOUT 'page', making each room name more specific by adding its area (e.g. 'Marktplatz in Foo-Ling-Yoo', 'Nurikomoon-Tempel in Asia'). Only set 'page' if BOTH rooms are listed together on one candidate page below.";
+  return { ok: false, ambiguous: true, candidates, guidance, error: r.error };
 }
 
 export interface MapToolResult {

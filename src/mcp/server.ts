@@ -66,11 +66,15 @@ export function buildMcpServer(backends: Backends): McpServer {
     {
       title: "Compute a route between rooms",
       description:
-        "Compute a deterministic in-game path from room `from` to room `to` (steps + copyable 'tue …' command + ASCII excerpt). If the rooms are ambiguous, returns candidate pages+rooms; re-call with `page` set to the chosen page.",
+        "Compute a deterministic in-game path from room `from` to room `to` (steps + copyable 'tue …' command + ASCII excerpt). " +
+        "By default (NO `page`) it routes across multiple maps automatically — including whole-area/overworld trips (city → overworld → another area). " +
+        "Include the area in the room name when known (e.g. 'Marktplatz in Foo-Ling-Yoo', 'Nurikomoon-Tempel in Asia') so the right start/destination is picked. " +
+        "Only set `page` when BOTH rooms are on that one map and you need to disambiguate between same-named rooms — it restricts routing to that single map, so a destination on another map will not be found. " +
+        "If ambiguous, it returns candidate pages+rooms: pick a page ONLY if both rooms appear on it; otherwise re-call without `page` using more specific room names (add the area).",
       inputSchema: {
-        from: z.string().describe("Start room name."),
-        to: z.string().describe("Destination room name."),
-        page: z.string().describe("Optional area page (conceptId) to disambiguate.").optional(),
+        from: z.string().describe("Start room name; include its area if known, e.g. 'Marktplatz in Foo-Ling-Yoo'."),
+        to: z.string().describe("Destination room name; include its area if known, e.g. 'Nurikomoon-Tempel in Asia'."),
+        page: z.string().describe("Single map (conceptId) to route within. Use ONLY to disambiguate two rooms on the SAME map; omit for cross-map/area trips.").optional(),
       },
     },
     async (args) => json(await tools.route(backends, args)),
