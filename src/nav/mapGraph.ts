@@ -19,7 +19,10 @@ const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+0-9A-Z˄˅<>▼◄►▲${BOX}]`);
 // Tregyln), scattering node markers away from their legend so rooms don't resolve.
 const WIRECH = new RegExp(`[o~|/\\\\\\-${BOX}]`);
 const isMapLine = (l: string) =>
-  l.length > 4 && WIRECH.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
+  // ≥4 chars, so a short but real wire row like "5--4" (two nodes joined by a
+  // dash — the Drachenhort/Spalt end of the Drachenkopf map) still counts; a
+  // pure dash run ("----", a Markdown rule) and table separators are excluded.
+  l.length >= 4 && WIRECH.test(l) && !/^\s*-+\s*$/.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
 const isLegendLine = (l: string) => /^\s*([0-9]{1,2}|[A-Z~])\s+\S/.test(l);
 // A map row that holds ONLY node labels (gates/numbers, e.g. "O" or "1     2"
 // above the wires they head) has no wire char, so isMapLine rejects it — which
@@ -57,6 +60,11 @@ const OFF: Record<string, [number, number]> = { E: [0, 1], W: [0, -1], N: [-1, 0
 const COMPASS: Record<string, string> = { E: "osten", W: "westen", N: "norden", S: "sueden", NE: "nordosten", SW: "suedwesten", NW: "nordwesten", SE: "suedosten" };
 const OPP: Record<string, string> = { E: "W", W: "E", N: "S", S: "N", NE: "SW", SW: "NE", NW: "SE", SE: "NW" };
 const FLEX = ".'˄˅";
+// Vertical (z-axis) portal glyphs: ˄ Hoch, ˅ Runter. A wire that runs through
+// one is a climb/descent, not a compass move — labelled by travel direction.
+const VERT = "˄˅";
+const zLabel = (startDir: string, vert: boolean): string =>
+  vert ? (startDir === "N" ? "hoch" : startDir === "S" ? "runter" : COMPASS[startDir]) : COMPASS[startDir];
 const wireDirs = (ch: string): string[] =>
   ch === "-" || ch === "─" || ch === "═" ? ["E", "W"]
   : ch === "|" || ch === "│" || ch === "║" ? ["N", "S"]
@@ -206,24 +214,25 @@ function buildGraph(groups: MapGroup[]) {
         if (isNode(fch) || /[0-9]/.test(fch)) { if (!underCrossed(fr, fc, startDir)) { const t = nodeAt(fr, fc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: COMPASS[startDir], hidden: false }); } continue; }
         if (wireDirs(fch).length === 0) continue;
         const seen = new Set([`${fr},${fc}`]);
-        const q: [number, number, boolean, boolean][] = [[fr, fc, fch === "'", !FLEX.includes(fch)]];
+        // 5th flag: the wire has crossed a ˄/˅ portal → this is a hoch/runter move.
+        const q: [number, number, boolean, boolean, boolean][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || VERT.includes(fch), VERT.includes(fch)]];
         while (q.length) {
-          const [r, c, hasApos, hasDir] = q.shift()!;
+          const [r, c, hasApos, hasDir, vert] = q.shift()!;
           for (const wd of wireDirs(at(r, c))) {
             const [dr, dc] = OFF[wd], nr = r + dr, nc = c + dc, nch = at(nr, nc);
             if (isNode(nch) || /[0-9]/.test(nch)) {
               if (underCrossed(nr, nc, wd)) {
                 // pass under this node, continue straight in the same direction
                 const ar = nr + dr, ac = nc + dc, akey = `${ar},${ac}`;
-                if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir]); }
+                if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir, vert]); }
                 continue;
               }
-              const t = nodeAt(nr, nc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: COMPASS[startDir], hidden: hasApos || !hasDir }); continue;
+              const t = nodeAt(nr, nc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: zLabel(startDir, vert), hidden: hasApos || !hasDir }); continue;
             }
             const key = `${nr},${nc}`; if (seen.has(key)) continue;
             const nd = wireDirs(nch); if (nd.length === 0) continue;
             if (!FLEX.includes(nch) && !FLEX.includes(at(r, c)) && !nd.includes(OPP[wd])) continue;
-            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch)]);
+            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || VERT.includes(nch), vert || VERT.includes(nch)]);
           }
         }
         for (const [to, e] of found) if (!adj.get(id)!.some((x) => x.to === to)) adj.get(id)!.push({ to, dir: e.dir, hidden: e.hidden, transition: null });
@@ -449,13 +458,14 @@ export function routeOnPage(md: string, fromQ: string, toQ: string): RouteResult
 
 /** Each ASCII sub-map on a page, with its heading anchor, legend and raw art —
  *  for answering "zeig mir die Karte vom <Gebiet>" by surfacing one sub-map. */
-export interface PageMap { anchor: string; rooms: string[]; legend: [string, string][]; ascii: string }
+export interface PageMap { anchor: string; rooms: string[]; legend: [string, string][]; anchors: [string, string[]][]; ascii: string }
 export function pageMaps(md: string): PageMap[] {
   return splitGroups(md)
     .map((g) => ({
       anchor: g.anchor,
       rooms: [...g.labelName.values()],
       legend: [...g.labelName.entries()] as [string, string][],
+      anchors: [...g.labelAnchor.entries()] as [string, string[]][],
       ascii: g.mapLines.join("\n").replace(/[ \t]+$/gm, "").replace(/\n+$/, ""),
     }))
     .filter((m) => m.ascii.trim().length > 0);
@@ -500,15 +510,40 @@ export function listRooms(md: string): { name: string; label: string }[] {
   return out;
 }
 
-/** Format a computed route for injection into the model context. */
+/** Format a computed route for injection into the model context. One continuous
+ *  numbered list across all maps (transitions are their own numbered lines);
+ *  runs of the same direction collapse into a numbered range with an explicit
+ *  count, so totals like "18× westen" are countable at a glance instead of
+ *  hidden in a comma stream or split into per-map blocks. */
 export function formatRoute(r: RouteResult): string {
   if (!r.ok) return "";
-  const parts = r.steps!.map((s) =>
-    s.transition ? `[${s.transition}]` : `${s.dir}${s.hidden ? " (nicht offensichtlich – suchen/tüfteln)" : ""}`,
-  );
-  let out = `BERECHNETER WEG von „${r.from}" nach „${r.to}" (deterministisch aus der Karte, NICHT verändern):\n`;
-  out += parts.join(", ");
-  if (r.clear) out += `\n\nKopierbarer Befehl: tue ${r.steps!.map((s) => s.dir).join(" ")}`;
+  const steps = r.steps!;
+  const w = String(steps.length).length; // number-column width
+  const pad = (n: number) => String(n).padStart(w);
+  const lines: string[] = [];
+  let i = 0, n = 0;
+  while (i < steps.length) {
+    const s = steps[i];
+    if (s.transition) {
+      n += 1;
+      lines.push(`${pad(n)}. ⇄ ${s.transition}`);
+      i += 1;
+      continue;
+    }
+    // Collapse a run of identical directional steps (same dir + hidden flag).
+    let j = i;
+    while (j < steps.length && !steps[j].transition && steps[j].dir === s.dir && !steps[j].hidden === !s.hidden) j += 1;
+    const count = j - i;
+    const label = `${s.dir}${s.hidden ? " (versteckt – suchen/tüfteln)" : ""}`;
+    if (count === 1) lines.push(`${pad(n + 1)}. ${label}`);
+    else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${label} (${count}×)`);
+    n += count;
+    i = j;
+  }
+  const moves = steps.filter((s) => s.dir).length;
+  let out = `BERECHNETER WEG von „${r.from}" nach „${r.to}" (${moves} Laufschritte, deterministisch aus der Karte, NICHT verändern):\n`;
+  out += lines.join("\n");
+  if (r.clear) out += `\n\nKopierbarer Befehl: tue ${steps.map((s) => s.dir).join(" ")}`;
   else out += `\n\n(Enthält nicht-offensichtliche Stellen oder Kartenübergänge – kein einzelner kopierbarer Befehl möglich.)`;
   if (r.ascii) out += `\n\nKartenausschnitt des Weges:\n\`\`\`\n${r.ascii}\n\`\`\``;
   return out;

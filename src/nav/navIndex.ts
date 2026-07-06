@@ -2,7 +2,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
-import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type RouteResult, type RouteStep } from "./mapGraph.js";
+import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type PageMap, type RouteResult, type RouteStep } from "./mapGraph.js";
 import { routeOnGrid, renderGridAscii } from "./grid/gridRouter.js";
 import type { GridMap } from "./grid/types.js";
 
@@ -360,6 +360,9 @@ export class NavIndex {
       const regionPage = [...this.roomsByPage.keys()].find(
         (p) => p !== grid.page && !this.gridByPage.has(p) && lastSeg(p) === regionSlug,
       );
+      // Sub-maps of the region page, to resolve the ground room a tile overlaps.
+      const regionFile = regionPage ? path.join(root, `${regionPage}.md`) : null;
+      const regionMaps = regionFile && existsSync(regionFile) ? pageMaps(await readFile(regionFile, "utf8")) : [];
       for (const gw of grid.gateways) {
         const tgt = gw.target;
         if (tgt && tgt !== grid.page && isMapPage(tgt) && !this.gridByPage.has(tgt)) {
@@ -372,9 +375,21 @@ export class NavIndex {
           add(grid.page, { to: tgt, exit: gw.label, entry: cityRoom }); // enter the city
           add(tgt, { to: grid.page, exit: cityRoom, entry: gw.label }); // step back onto the overworld
         }
-        // Overlap seam onto the region's own ASCII sub-maps, matched by name.
+        // Overlap seam onto the region's own ASCII sub-maps. Name-matching finds
+        // the FEATURE the tile marks (the Gebirge's "Auf einer Wolke"). Usually
+        // you step off the overworld straight onto it. The exception is an
+        // ELEVATED feature: there you land on the ground room that overlaps the
+        // worldmap (the "#Karte"-linked "Pfad im Gebirge") and the ASCII map does
+        // the last hop ("hoch" onto the cloud). Take that redirect ONLY when the
+        // ground room genuinely connects to the feature — in Asia the "Pfad auf
+        // Asia" does NOT reach the Nurikomoon-Tempel, so land on the temple.
         if (regionPage) {
-          const room = this.bestSeamRoom(regionPage, [gw.label, gw.anchor, lastSeg(tgt ?? "")]);
+          const feature = this.bestSeamRoom(regionPage, [gw.label, gw.anchor, lastSeg(tgt ?? "")]);
+          let room = feature;
+          if (feature) {
+            const ground = this.overlapGround(regionMaps, feature);
+            if (ground && (await this.routeByNames(regionPage, ground, feature)).ok) room = ground;
+          }
           if (room) {
             add(grid.page, { to: regionPage, exit: gw.label, entry: room });
             add(regionPage, { to: grid.page, exit: room, entry: gw.label });
@@ -407,6 +422,32 @@ export class NavIndex {
       if (k > bestScore) { bestScore = k; best = name; }
     }
     return best;
+  }
+
+  /** The ground room that overlaps the overworld on the same sub-map as
+   *  `feature`: the room whose legend links to the worldmap ("#Karte"). You step
+   *  off the overworld onto THIS room (e.g. "Pfad im Gebirge"), then the ASCII
+   *  map handles the final hop onto the feature ("Auf einer Wolke" is one "hoch"
+   *  up). Returns null when the sub-map has no such worldmap-linked room. */
+  private overlapGround(maps: PageMap[], feature: string): string | null {
+    const fd = deumlaut(feature);
+    const sub = maps.find((m) => m.legend.some(([, n]) => n && deumlaut(n) === fd));
+    if (!sub) return null;
+    const nameOf = new Map(sub.legend);
+    const anchorsOf = new Map(sub.anchors);
+    const onWorldmap = (label: string) => (anchorsOf.get(label) ?? []).some((a) => /karte/i.test(a));
+    // The elevated-feature case (a "Wolke" reached by "hoch") is the exception,
+    // not the rule: only redirect when the feature is NOT itself on the worldmap
+    // but another room on its sub-map is. If the feature sits on the worldmap,
+    // step onto it directly — don't invent a detour through a sibling room.
+    const featLabel = sub.legend.find(([, n]) => n && deumlaut(n) === fd)?.[0];
+    if (featLabel && onWorldmap(featLabel)) return null;
+    for (const [label] of sub.legend) {
+      if (!onWorldmap(label)) continue;
+      const n = nameOf.get(label);
+      if (n && deumlaut(n) !== fd) return n;
+    }
+    return null;
   }
 
   /** Pick the arrival room on a city map `page` for a grid gateway. You enter a
