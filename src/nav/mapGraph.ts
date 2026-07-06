@@ -165,7 +165,12 @@ function buildGraph(groups: MapGroup[]) {
       nodes.set(id, { gid: id, gi, r, c, cEnd: cEnd > c ? cEnd : undefined, label: lbl, name: lbl ? g.labelName.get(lbl) ?? null : null, anchors: lbl ? g.labelAnchor.get(lbl) : undefined });
       adj.set(id, []); local.push(id);
     }
-    const EDGECH = "|/\\-.'˄˅" + BOX;
+    // A digit is a free node (not a label for a nearby `o`) if a real wire
+    // touches it. ˄/˅ are NOT wires — they annotate a z-move on a SEPARATE wire
+    // (e.g. "o  1" with "| ˄" to the left: the ˄ belongs to the o's vertical
+    // link, not to the "1" label). Counting them here wrongly detached the
+    // Drachenkopf "1" from its `o`, so exclude them from the wire-touch test.
+    const EDGECH = "|/\\-.'" + BOX;
     for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++)
       if (/[0-9]/.test(at(r, c)) && !/[0-9]/.test(at(r, c - 1)) && !/[A-Z]/.test(at(r, c - 1))) {
         let c2 = c; while (/[0-9]/.test(at(r, c2 + 1))) c2++;
@@ -175,7 +180,13 @@ function buildGraph(groups: MapGroup[]) {
         let best: GNode | null = null, bk = [99, 99];
         for (const id of local) { const n = nodes.get(id)!; if (n.label) continue; const rowD = Math.abs(n.r - r), colD = Math.min(Math.abs(n.c - c), Math.abs(n.c - c2)); if (!((rowD <= 1 && colD <= 6) || Math.max(rowD, colD) <= 2)) continue; if (rowD < bk[0] || (rowD === bk[0] && colD < bk[1])) { bk = [rowD, colD]; best = n; } }
         const attach = best && (Math.max(bk[0], bk[1]) <= 1 || (!adjEdge && bk[0] === 0));
-        if (attach && best) { best.label = num; best.name = g.labelName.get(num) ?? null; best.anchors = g.labelAnchor.get(num); }
+        if (attach && best) {
+          best.label = num; best.name = g.labelName.get(num) ?? null; best.anchors = g.labelAnchor.get(num);
+          // Extend the node's column span to cover a detached right-side label
+          // (e.g. "o  1"): wires that meet the label's column (here the "H" link
+          // up col 9) must still resolve to this room, not dead-end in the gap.
+          if (c2 > best.c) best.cEnd = Math.max(best.cEnd ?? best.c, c2);
+        }
         else { const id = gid(r, c); nodes.set(id, { gid: id, gi, r, c, cEnd: c2, label: num, name: g.labelName.get(num) ?? null, anchors: g.labelAnchor.get(num) }); adj.set(id, []); local.push(id); }
       }
     // Map a cell to a node, treating a multi-char label as occupying its whole
@@ -197,6 +208,15 @@ function buildGraph(groups: MapGroup[]) {
       wd === "E" || wd === "W" ? DOTS.includes(at(r, c - 1)) && DOTS.includes(at(r, c + 1))
         : wd === "N" || wd === "S" ? DOTS.includes(at(r - 1, c)) && DOTS.includes(at(r + 1, c))
           : false;
+    // A ˄/˅ "hoch/runter" glyph marks a z-axis move. Maps draw it either ON the
+    // wire (Gebirge: the P–W link) or just BESIDE a vertical "|" (Drachenkopf:
+    // the 1–2 link has "|˅"/"| ˄" to the right of the wire). So a cell counts as
+    // a vertical portal if it or an orthogonal neighbour is a ˄/˅. (Only N/S
+    // moves become hoch/runter — see zLabel — so a stray arrow near a horizontal
+    // wire is harmless.)
+    const nearVert = (r: number, c: number) =>
+      VERT.includes(at(r, c)) || VERT.includes(at(r, c - 1)) || VERT.includes(at(r, c + 1)) ||
+      VERT.includes(at(r - 1, c)) || VERT.includes(at(r + 1, c));
     for (const id of local) {
       const n = nodes.get(id)!;
       const ce = n.cEnd ?? n.c;
@@ -221,7 +241,7 @@ function buildGraph(groups: MapGroup[]) {
         if (wireDirs(fch).length === 0) continue;
         const seen = new Set([`${fr},${fc}`]);
         // 5th flag: the wire has crossed a ˄/˅ portal → this is a hoch/runter move.
-        const q: [number, number, boolean, boolean, boolean][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || VERT.includes(fch), VERT.includes(fch)]];
+        const q: [number, number, boolean, boolean, boolean][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || nearVert(fr, fc), nearVert(fr, fc)]];
         while (q.length) {
           const [r, c, hasApos, hasDir, vert] = q.shift()!;
           for (const wd of wireDirs(at(r, c))) {
@@ -238,7 +258,7 @@ function buildGraph(groups: MapGroup[]) {
             const key = `${nr},${nc}`; if (seen.has(key)) continue;
             const nd = wireDirs(nch); if (nd.length === 0) continue;
             if (!FLEX.includes(nch) && !FLEX.includes(at(r, c)) && !nd.includes(OPP[wd])) continue;
-            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || VERT.includes(nch), vert || VERT.includes(nch)]);
+            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || nearVert(nr, nc), vert || nearVert(nr, nc)]);
           }
         }
         for (const [to, e] of found) if (!adj.get(id)!.some((x) => x.to === to)) adj.get(id)!.push({ to, dir: e.dir, hidden: e.hidden, transition: null });
@@ -538,13 +558,27 @@ export function formatRoute(r: RouteResult): string {
       i += 1;
       continue;
     }
-    // Collapse a run of identical directional steps (same dir + hidden flag).
+    // A hidden step ran through "."/"'" glyphs — per the legend, "no recognizable
+    // direction". The geometric compass guess is misleading (the way itself is
+    // unknown too), so render these as UNKNOWN, not e.g. "suedosten". Group any
+    // run of consecutive hidden steps together (their dirs are meaningless).
+    if (s.hidden) {
+      let j = i;
+      while (j < steps.length && steps[j].hidden && !steps[j].transition) j += 1;
+      const count = j - i;
+      const label = "??? unbekannte Richtung/Weg – hier suchen/tüfteln";
+      if (count === 1) lines.push(`${pad(n + 1)}. ${label}`);
+      else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${label} (${count}×)`);
+      n += count;
+      i = j;
+      continue;
+    }
+    // Collapse a run of identical directional steps.
     let j = i;
-    while (j < steps.length && !steps[j].transition && steps[j].dir === s.dir && !steps[j].hidden === !s.hidden) j += 1;
+    while (j < steps.length && !steps[j].transition && !steps[j].hidden && steps[j].dir === s.dir) j += 1;
     const count = j - i;
-    const label = `${s.dir}${s.hidden ? " (versteckt – suchen/tüfteln)" : ""}`;
-    if (count === 1) lines.push(`${pad(n + 1)}. ${label}`);
-    else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${label} (${count}×)`);
+    if (count === 1) lines.push(`${pad(n + 1)}. ${s.dir}`);
+    else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${s.dir} (${count}×)`);
     n += count;
     i = j;
   }

@@ -160,7 +160,7 @@ export async function route(
 
   if (r.ok) {
     const steps = (r.steps ?? []).map((s) =>
-      s.transition ? `[${s.transition}]` : `${s.dir}${s.hidden ? " (versteckt)" : ""}`,
+      s.transition ? `[${s.transition}]` : s.hidden ? "??? (unbekannte Richtung – suchen/tüfteln)" : s.dir!,
     );
     return {
       ok: true,
