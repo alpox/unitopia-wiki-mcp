@@ -322,13 +322,18 @@ function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>,
     for (const e of adj.get(n.gid) ?? []) if (nodes.get(e.to)?.label === n.label) k++;
     return k;
   };
-  const base = (s: string) => deumlaut(s).replace(/\s*\(.*$/, "");
+  // Separator-insensitive name compare: collapse any punctuation/space run to a
+  // single space so a query "Nurikomoon-Tempel" matches a room "Nurikomoon
+  // Tempel (Nuriko)". (Labels are single glyphs — compared raw, via `ql`.)
+  const sep = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, " ").trim();
+  const nq = sep(q);
+  const base = (s: string) => sep(deumlaut(s).replace(/\s*\(.*$/, ""));
   let best: GNode | null = null, bestScore = -1;
   for (const n of nodes.values()) {
     let tier = -1;
     if (n.label && n.label.toLowerCase() === ql) tier = 4;
-    else if (n.name && (deumlaut(n.name) === ql || base(n.name) === ql)) tier = 3;
-    else if (n.name && deumlaut(n.name).includes(ql)) tier = 1;
+    else if (n.name && (sep(n.name) === nq || base(n.name) === nq)) tier = 3;
+    else if (n.name && sep(n.name).includes(nq)) tier = 1;
     if (tier < 0) continue;
     const numbered = n.label && /^\d+$/.test(n.label) ? 1 : 0;
     const score = tier * 1e6 + numbered * 1e4 + sameLabelNeighbours(n) * 100 + 1 / (1 + n.gi);

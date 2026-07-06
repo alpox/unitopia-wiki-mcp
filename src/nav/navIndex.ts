@@ -347,16 +347,66 @@ export class NavIndex {
     // a city/ASCII page (the imagemap rect), so wire them both ways directly —
     // the city rarely links back in ASCII (it links to the gif, not an "asia"
     // page). Entry room on the city = its room that best matches the gateway.
+    // The region's own ASCII page (e.g. grid `karte/märchenland` ↔ page
+    // `märchenland`): some overworld tiles OVERLAP a room drawn on one of that
+    // page's ASCII sub-maps — the tile and the room are the same place (a
+    // "Wolke vom Sandmännchen" tile is the Gebirge sub-map's "Auf einer Wolke
+    // (Sandmännchen)" room). The fine-grained destination lives only on the
+    // ASCII sub-map, so a name-matched seam here lets a route step off the
+    // overworld straight onto the exact room, not a generic city entrance.
+    const lastSeg = (p: string) => p.split("/").pop()!;
     for (const grid of this.gridByPage.values()) {
+      const regionSlug = lastSeg(grid.page);
+      const regionPage = [...this.roomsByPage.keys()].find(
+        (p) => p !== grid.page && !this.gridByPage.has(p) && lastSeg(p) === regionSlug,
+      );
       for (const gw of grid.gateways) {
         const tgt = gw.target;
-        if (!tgt || tgt === grid.page || !isMapPage(tgt)) continue;
-        const cityRoom = this.bestRoomOn(tgt, gw.anchor ?? gw.label) ?? gw.label;
-        add(grid.page, { to: tgt, exit: gw.label, entry: cityRoom }); // enter the city
-        add(tgt, { to: grid.page, exit: cityRoom, entry: gw.label }); // step back onto the overworld
+        if (tgt && tgt !== grid.page && isMapPage(tgt) && !this.gridByPage.has(tgt)) {
+          // The city's gate is structural, not lexical: the one room whose legend
+          // link points BACK to the overworld region (e.g. Koboldingen's lettered
+          // "S Stadttore → märchenland"). Prefer it; only if the page has no such
+          // back-link fall back to the name/keyword guess.
+          const gate = (linksByPage.get(tgt) ?? []).find((l) => l.targets.includes(regionSlug))?.name;
+          const cityRoom = gate ?? this.bestRoomOn(tgt, gw.anchor ?? gw.label) ?? gw.label;
+          add(grid.page, { to: tgt, exit: gw.label, entry: cityRoom }); // enter the city
+          add(tgt, { to: grid.page, exit: cityRoom, entry: gw.label }); // step back onto the overworld
+        }
+        // Overlap seam onto the region's own ASCII sub-maps, matched by name.
+        if (regionPage) {
+          const room = this.bestSeamRoom(regionPage, [gw.label, gw.anchor, lastSeg(tgt ?? "")]);
+          if (room) {
+            add(grid.page, { to: regionPage, exit: gw.label, entry: room });
+            add(regionPage, { to: grid.page, exit: room, entry: gw.label });
+          }
+        }
       }
     }
     this.pageEdges = edges;
+  }
+
+  /** Find the ASCII room on `page` that a grid tile OVERLAPS, by name. Unlike a
+   *  city arrival (see `bestRoomOn`), this is a strict identity match: the tile
+   *  and the room are the same place, so we require at least two shared
+   *  significant tokens (a full multi-word overlap like "Wolke"+"Sandmännchen")
+   *  and never fall back — a weak match must yield no seam, not a wrong one. */
+  private bestSeamRoom(page: string, names: (string | undefined | null)[]): string | null {
+    const rooms = this.roomsByPage.get(page) ?? [];
+    if (!rooms.length) return null;
+    const gwTok = new Set<string>();
+    for (const n of names) if (n) for (const t of roomTokens(n)) gwTok.add(t);
+    if (!gwTok.size) return null;
+    // Keep parentheticals — they often carry the identifying word ("Auf einer
+    // Wolke (Sandmännchen)"). Only drop "-> …" wayfinding annotations.
+    const clean = (n: string) => deumlaut(n).replace(/->.*$/, "").trim();
+    let best: string | null = null, bestScore = 1; // require ≥2 shared tokens
+    for (const name of rooms) {
+      const rt = roomTokens(clean(name));
+      let k = 0;
+      for (const rtok of rt) if ([...gwTok].some((a) => a.includes(rtok) || rtok.includes(a))) k++;
+      if (k > bestScore) { bestScore = k; best = name; }
+    }
+    return best;
   }
 
   /** Pick the arrival room on a city map `page` for a grid gateway. You enter a
@@ -370,7 +420,8 @@ export class NavIndex {
     if (!rooms.length) return null;
     // Drop "-> …" wayfinding hints and parentheticals before matching on names.
     const clean = (n: string) => deumlaut(n).replace(/->.*$/, "").replace(/\(.*$/, "").trim();
-    const isGate = (n: string) => /\b(tor|tuer|eingang|stadtmauer|stadttor|hafen|portal|pforte)\b/.test(clean(n));
+    // Match the gate stem with an optional plural suffix ("Stadttore", "Tore").
+    const isGate = (n: string) => /\b(stadttor|tor|tuer|eingang|stadtmauer|hafen|portal|pforte)(e|en|s)?\b/.test(clean(n));
     const qd = deumlaut(q), qTok = roomTokens(q);
     let best: string | null = null, bestScore = -1;
     for (const name of rooms) {
@@ -435,30 +486,44 @@ export class NavIndex {
       chain.unshift({ page: cur, edge: link?.edge });
       cur = link ? link.from : null;
     }
-    // Stitch per-page legs.
-    const steps: RouteStep[] = [];
-    const asciiParts: string[] = [];
-    const areaName = (slug: string) => slug.split("/").pop()!.replace(/-/g, " ");
-    for (let i = 0; i < chain.length; i++) {
-      const page = chain[i].page;
-      const entry = i === 0 ? null : chain[i].edge!.entry; // arrive here
-      const exit = i === chain.length - 1 ? null : chain[i + 1].edge!.exit; // leave here
-      const fromForms = i === 0 ? fc.forms : [entry!];
-      const toForms = i === chain.length - 1 ? tc.forms : [exit!];
-      const leg = await this.routeByForms(page, fromForms, toForms);
-      if (!leg.ok) return { ok: false }; // this page-path doesn't actually connect
-      if (i > 0) steps.push({ dir: null, hidden: false, transition: `Übergang nach ${areaName(page)} (${entry})`, toName: entry });
-      steps.push(...(leg.steps ?? []));
-      if (leg.ascii) asciiParts.push(`— ${areaName(page)} —\n${leg.ascii}`);
-    }
-    return {
-      ok: true,
-      from: fromQ,
-      to: toQ,
-      steps,
-      clear: false, // a cross-page trip always has crossings
-      ascii: asciiParts.join("\n\n"),
+    // Stitch per-page legs. The destination page often has several disconnected
+    // ASCII sub-maps, and BFS records only ONE entry edge into it — which may
+    // land on the wrong sub-map. So try EVERY edge from the penultimate page
+    // into the goal (the final seam) and keep the first whose legs all connect.
+    // A grid page and its ASCII area page share a slug ("karte/märchenland" vs
+    // "märchenland"); label the overworld one distinctly so a trip that crosses
+    // both doesn't show two identical "nach Märchenland" transitions.
+    const areaName = (slug: string) => {
+      const name = slug.split("/").pop()!.replace(/-/g, " ");
+      return this.gridByPage.has(slug) ? `Überlandkarte ${name}` : name;
     };
+    const stitch = async (edges: (PageEdge | undefined)[]): Promise<RouteResult | null> => {
+      const steps: RouteStep[] = [];
+      const asciiParts: string[] = [];
+      for (let i = 0; i < chain.length; i++) {
+        const page = chain[i].page;
+        const entry = i === 0 ? null : edges[i]!.entry; // arrive here
+        const exit = i === chain.length - 1 ? null : edges[i + 1]!.exit; // leave here
+        const fromForms = i === 0 ? fc.forms : [entry!];
+        const toForms = i === chain.length - 1 ? tc.forms : [exit!];
+        const leg = await this.routeByForms(page, fromForms, toForms);
+        if (!leg.ok) return null; // this page-path doesn't actually connect
+        if (i > 0) steps.push({ dir: null, hidden: false, transition: `Übergang nach ${areaName(page)} (${entry})`, toName: entry });
+        steps.push(...(leg.steps ?? []));
+        if (leg.ascii) asciiParts.push(`— ${areaName(page)} —\n${leg.ascii}`);
+      }
+      return { ok: true, from: fromQ, to: toQ, steps, clear: false, ascii: asciiParts.join("\n\n") };
+    };
+    const baseEdges = chain.map((c) => c.edge);
+    const finalSeams = chain.length > 1
+      ? (this.pageEdges!.get(chain[chain.length - 2].page) ?? []).filter((e) => e.to === goal)
+      : [];
+    const tries = finalSeams.length ? finalSeams : [baseEdges[baseEdges.length - 1]];
+    for (const fe of tries) {
+      const res = await stitch([...baseEdges.slice(0, -1), fe]);
+      if (res) return res;
+    }
+    return { ok: false };
   }
 
   /** The slug of `name` if it names a map page (its own area, e.g. "Borsippa"),
