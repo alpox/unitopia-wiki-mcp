@@ -159,9 +159,15 @@ export async function route(
     : await b.nav.resolveAndRoute(args.from, args.to);
 
   if (r.ok) {
-    const steps = (r.steps ?? []).map((s) =>
-      s.transition ? `[${s.transition}]` : s.hidden ? "??? (unbekannte Richtung – suchen/tüfteln)" : s.dir!,
-    );
+    const steps = (r.steps ?? []).map((s) => {
+      if (s.transition) return `[${s.transition}]`;
+      if (!s.hidden) return s.dir!;
+      // Hidden = "'"/dot on the path → command unknown. A ˄/˅ arrow still gives a
+      // reliable up/down hint; otherwise the direction is fully unknown.
+      if (s.dir === "hoch") return "??? nach oben (klettern?) – Weg unbekannt, tüfteln";
+      if (s.dir === "runter") return "??? nach unten – Weg unbekannt, tüfteln";
+      return "??? (unbekannte Richtung – suchen/tüfteln)";
+    });
     return {
       ok: true,
       from: r.from,

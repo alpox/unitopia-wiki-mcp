@@ -253,6 +253,11 @@ function buildGraph(groups: MapGroup[]) {
                 if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir, vert]); }
                 continue;
               }
+              // A "'"/dot on the path makes the step's COMMAND unknown (the legend:
+              // "keine erkennbare Himmelsrichtung"). A ˄/˅ portal only tells us the
+              // room lies higher/lower — a useful hint (dir = hoch/runter) — but does
+              // NOT clear `hidden`: you still can't just "hoch", you have to tüfteln
+              // (a "klettere hoch"-type move). So keep hidden when hasApos/!hasDir.
               const t = nodeAt(nr, nc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: zLabel(startDir, vert), hidden: hasApos || !hasDir }); continue;
             }
             const key = `${nr},${nc}`; if (seen.has(key)) continue;
@@ -546,6 +551,17 @@ export function formatRoute(r: RouteResult): string {
   const steps = r.steps!;
   const w = String(steps.length).length; // number-column width
   const pad = (n: number) => String(n).padStart(w);
+  // A hidden step ran through a "'"/dot — "no recognizable direction" per the
+  // legend — so its COMMAND is unknown (you must tüfteln), and the geometric
+  // compass guess is misleading. A ˄/˅ arrow on the path still yields a reliable
+  // up/down HINT (dir = hoch/runter), so keep that as context while flagging the
+  // command unknown; otherwise the direction is fully unknown.
+  const stepLabel = (s: RouteStep): string => {
+    if (!s.hidden) return s.dir!;
+    if (s.dir === "hoch") return "??? nach oben (Raum liegt höher, z. B. klettern) – Weg unbekannt, suchen/tüfteln";
+    if (s.dir === "runter") return "??? nach unten (Raum liegt tiefer) – Weg unbekannt, suchen/tüfteln";
+    return "??? unbekannte Richtung/Weg – hier suchen/tüfteln";
+  };
   const lines: string[] = [];
   let i = 0, n = 0;
   while (i < steps.length) {
@@ -558,27 +574,14 @@ export function formatRoute(r: RouteResult): string {
       i += 1;
       continue;
     }
-    // A hidden step ran through "."/"'" glyphs — per the legend, "no recognizable
-    // direction". The geometric compass guess is misleading (the way itself is
-    // unknown too), so render these as UNKNOWN, not e.g. "suedosten". Group any
-    // run of consecutive hidden steps together (their dirs are meaningless).
-    if (s.hidden) {
-      let j = i;
-      while (j < steps.length && steps[j].hidden && !steps[j].transition) j += 1;
-      const count = j - i;
-      const label = "??? unbekannte Richtung/Weg – hier suchen/tüfteln";
-      if (count === 1) lines.push(`${pad(n + 1)}. ${label}`);
-      else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${label} (${count}×)`);
-      n += count;
-      i = j;
-      continue;
-    }
-    // Collapse a run of identical directional steps.
+    // Collapse a run of steps that render identically (same clean dir, or the
+    // same kind of unknown/vertical hint).
+    const label = stepLabel(s);
     let j = i;
-    while (j < steps.length && !steps[j].transition && !steps[j].hidden && steps[j].dir === s.dir) j += 1;
+    while (j < steps.length && !steps[j].transition && stepLabel(steps[j]) === label) j += 1;
     const count = j - i;
-    if (count === 1) lines.push(`${pad(n + 1)}. ${s.dir}`);
-    else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${s.dir} (${count}×)`);
+    if (count === 1) lines.push(`${pad(n + 1)}. ${label}`);
+    else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${label} (${count}×)`);
     n += count;
     i = j;
   }
