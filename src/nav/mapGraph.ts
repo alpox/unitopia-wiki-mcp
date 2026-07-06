@@ -558,8 +558,10 @@ export function formatRoute(r: RouteResult): string {
   // command unknown; otherwise the direction is fully unknown.
   const stepLabel = (s: RouteStep): string => {
     if (!s.hidden) return s.dir!;
-    if (s.dir === "hoch") return "??? nach oben (Raum liegt höher, z. B. klettern) – Weg unbekannt, suchen/tüfteln";
-    if (s.dir === "runter") return "??? nach unten (Raum liegt tiefer) – Weg unbekannt, suchen/tüfteln";
+    // A ˄/˅ gives the direction (hoch/runter); the "'" only means the exact
+    // COMMAND is unclear — so lead with the direction, then flag it.
+    if (s.dir === "hoch") return "hoch (aber Befehl unklar – evtl. »klettere hoch« o. Ä., tüfteln)";
+    if (s.dir === "runter") return "runter (aber Befehl unklar – tüfteln)";
     return "??? unbekannte Richtung/Weg – hier suchen/tüfteln";
   };
   const lines: string[] = [];

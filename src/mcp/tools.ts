@@ -164,8 +164,8 @@ export async function route(
       if (!s.hidden) return s.dir!;
       // Hidden = "'"/dot on the path → command unknown. A ˄/˅ arrow still gives a
       // reliable up/down hint; otherwise the direction is fully unknown.
-      if (s.dir === "hoch") return "??? nach oben (klettern?) – Weg unbekannt, tüfteln";
-      if (s.dir === "runter") return "??? nach unten – Weg unbekannt, tüfteln";
+      if (s.dir === "hoch") return "hoch (Befehl unklar – evtl. »klettere hoch«, tüfteln)";
+      if (s.dir === "runter") return "runter (Befehl unklar – tüfteln)";
       return "??? (unbekannte Richtung – suchen/tüfteln)";
     });
     return {
