@@ -19,10 +19,14 @@ const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+0-9A-Z˄˅<>▼◄►▲${BOX}]`);
 // Tregyln), scattering node markers away from their legend so rooms don't resolve.
 const WIRECH = new RegExp(`[o~|/\\\\\\-${BOX}]`);
 const isMapLine = (l: string) =>
-  // ≥4 chars, so a short but real wire row like "5--4" (two nodes joined by a
-  // dash — the Drachenhort/Spalt end of the Drachenkopf map) still counts; a
-  // pure dash run ("----", a Markdown rule) and table separators are excluded.
-  l.length >= 4 && WIRECH.test(l) && !/^\s*-+\s*$/.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
+  l.length > 4 && WIRECH.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
+// A short (≤4-char) wire row that joins TWO nodes with a connector — e.g. "5--4"
+// (the Drachenhort/Spalt end of the Drachenkopf map) or "T--1". `isMapLine`'s
+// length gate drops these, so they're only accepted as a CONTINUATION of an
+// already-open block (see splitGroups), never as a block start — a bare "   |"
+// or "   o" is NOT matched, preserving the old block boundaries elsewhere.
+const isNodeJoinRow = (l: string) =>
+  /^[\s]*[0-9A-Zo~][-/\\|]{1,2}[0-9A-Zo~][\s]*$/.test(l) && [...l].every((c) => CLS.test(c));
 const isLegendLine = (l: string) => /^\s*([0-9]{1,2}|[A-Z~])\s+\S/.test(l);
 // A map row that holds ONLY node labels (gates/numbers, e.g. "O" or "1     2"
 // above the wires they head) has no wire char, so isMapLine rejects it — which
@@ -91,7 +95,9 @@ function splitGroups(md: string): MapGroup[] {
       // real node labels but no wire char, so isMapLine skips them otherwise.
       while (start > 0 && isLabelRow(lines[start - 1])) start--;
       while (i < lines.length && (isMapLine(lines[i]) || lines[i].trim() === "" ||
-        (isLabelRow(lines[i]) && i > start && lines[i - 1].trim() !== "" && (isMapLine(lines[i - 1]) || isLabelRow(lines[i - 1]))))) i++;
+        (isLabelRow(lines[i]) && i > start && lines[i - 1].trim() !== "" && (isMapLine(lines[i - 1]) || isLabelRow(lines[i - 1]))) ||
+        // A short "5--4"-style node-join row directly under existing map art.
+        (isNodeJoinRow(lines[i]) && i > start && isMapLine(lines[i - 1])))) i++;
       let end = i; while (end > start && lines[end - 1].trim() === "") end--;
       const mapLines = lines.slice(start, end);
       const labelName = new Map<string, string>(), labelAnchor = new Map<string, string[]>();
@@ -525,8 +531,10 @@ export function formatRoute(r: RouteResult): string {
   while (i < steps.length) {
     const s = steps[i];
     if (s.transition) {
-      n += 1;
-      lines.push(`${pad(n)}. ⇄ ${s.transition}`);
+      // A map boundary is NOT an action — the player just keeps walking onto the
+      // next map. Show it as an un-numbered context marker, not a counted step.
+      const where = s.transition.replace(/^Übergang nach\s+/i, "");
+      lines.push(`${" ".repeat(w + 1)}↳ (Karte wechselt zu ${where} – einfach weiterlaufen)`);
       i += 1;
       continue;
     }
@@ -540,7 +548,7 @@ export function formatRoute(r: RouteResult): string {
     n += count;
     i = j;
   }
-  const moves = steps.filter((s) => s.dir).length;
+  const moves = n;
   let out = `BERECHNETER WEG von „${r.from}" nach „${r.to}" (${moves} Laufschritte, deterministisch aus der Karte, NICHT verändern):\n`;
   out += lines.join("\n");
   if (r.clear) out += `\n\nKopierbarer Befehl: tue ${steps.map((s) => s.dir).join(" ")}`;
