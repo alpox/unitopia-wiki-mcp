@@ -6,6 +6,8 @@
  * via legend anchors, and computes shortest paths by BFS. Routes are computed
  * entirely in code — no LLM — so the assistant can never hallucinate a way.
  */
+import type { NavNode, NavEdge } from "./graph/types.js";
+import { edge } from "./graph/types.js";
 
 const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬";
 // Underscore appears as map decoration on some maps (e.g. "\_'\_" diagonals on
@@ -512,6 +514,57 @@ export function routeOnPage(md: string, fromQ: string, toQ: string): RouteResult
   while (prev.get(cur)) { const { from, e } = prev.get(cur)!; steps.unshift({ dir: e.dir, hidden: e.hidden, transition: e.transition, toName: nodes.get(e.to)?.name ?? null }); pathGids.unshift(from); cur = from; }
   const clear = steps.every((x) => x.dir && !x.hidden && !x.transition);
   return { ok: true, from: s.name ?? s.label ?? fromQ, to: t.name ?? t.label ?? toQ, steps, clear, ascii: asciiPath(grids, nodes, pathGids) };
+}
+
+/**
+ * Emit this page's parsed map as unified-graph IR (nodes + command-edges), the
+ * same shape the marcopolo side produces, so the two can be merged into one
+ * `_navgraph` artifact. A wiki edge's command is its compass/z direction unless
+ * the move is hidden (`'`/dot → command unknown); a hidden ˄/˅ still yields a
+ * climb HINT. Cross-map transitions are edges flagged `transition`. Anonymous
+ * junction `o` nodes are kept (routing needs them) but carry a null name.
+ */
+export function pageGraphIR(md: string, pageSlug: string, region: string): { nodes: NavNode[]; edges: NavEdge[] } {
+  const groups = splitGroups(md);
+  if (!groups.length) return { nodes: [], edges: [] };
+  const { nodes, adj } = buildGraph(groups);
+  const idOf = (gid: string) => `wiki:${pageSlug}#${gid}`;
+  const norm = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, "");
+  // A room's gateway targets: its legend #sub-map anchors PLUS the KB pages its
+  // legend line links to (from pageLinks). Both feed structural reconciliation.
+  const linkTargets = new Map<string, string[]>();
+  for (const pl of pageLinks(md)) linkTargets.set(pl.label, pl.targets);
+  const outNodes: NavNode[] = [];
+  for (const n of nodes.values()) {
+    const portals = [
+      ...(n.anchors ?? []),
+      ...(n.label ? linkTargets.get(n.label) ?? [] : []),
+    ].map(norm).filter(Boolean);
+    outNodes.push({
+      id: idOf(n.gid),
+      name: n.name,
+      aliases: [],
+      region,
+      sources: [{ origin: "wiki", page: pageSlug, label: n.label ?? "" }],
+      ...(portals.length ? { portals: [...new Set(portals)] } : {}),
+    });
+  }
+  const edges: NavEdge[] = [];
+  for (const [gid, list] of adj as Map<string, { to: string; dir: string | null; hidden: boolean; transition: string | null }[]>) {
+    for (const e of list) {
+      // A plain ˄/˅ (not hidden) is a stair-like "hoch"/"runter" command — NOT a
+      // climb. Only a HIDDEN move (`'`/dot on the path) has an unknown command;
+      // there a ˄/˅ still gives an up/down HINT, phrased as uncertain (it may be
+      // a climb or a fully custom verb — we cannot know).
+      const command = !e.hidden && e.dir && !e.transition ? e.dir : null;
+      const hint = e.transition || !e.hidden ? null
+        : e.dir === "hoch" ? "nach oben – Befehl unklar (evtl. klettern/Sonderbefehl)"
+        : e.dir === "runter" ? "nach unten – Befehl unklar (evtl. klettern/Sonderbefehl)"
+        : null;
+      edges.push(edge(idOf(gid), idOf(e.to), command, "wiki", pageSlug, { hint, transition: !!e.transition }));
+    }
+  }
+  return { nodes: outNodes, edges };
 }
 
 /** Each ASCII sub-map on a page, with its heading anchor, legend and raw art —
