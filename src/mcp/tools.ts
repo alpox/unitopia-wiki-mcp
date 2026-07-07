@@ -160,10 +160,13 @@ export async function route(
 
   if (r.ok) {
     const steps = (r.steps ?? []).map((s) => {
-      if (s.transition) return `[${s.transition}]`;
-      if (!s.hidden) return s.dir!;
-      // Hidden = "'"/dot on the path → command unknown. A ˄/˅ arrow still gives a
-      // reliable up/down hint; otherwise the direction is fully unknown.
+      // Marcopolo-sourced steps (fallback graph) are flagged so the user knows the
+      // move comes from the older secondary maps, and carry a traversal hint.
+      const tag = s.source === "marcopolo" ? " «lt. marcopolo-Karte»" : "";
+      const hint = s.hint ? ` (${s.hint})` : "";
+      if (s.transition) return `[${s.transition}]${tag}`;
+      if (!s.hidden) return `${s.dir}${hint}${tag}`;
+      if (s.hint) return `??? ${s.hint}${tag} – Befehl unklar, tüfteln`;
       if (s.dir === "hoch") return "hoch (Befehl unklar – evtl. »klettere hoch«, tüfteln)";
       if (s.dir === "runter") return "runter (Befehl unklar – tüfteln)";
       return "??? (unbekannte Richtung – suchen/tüfteln)";

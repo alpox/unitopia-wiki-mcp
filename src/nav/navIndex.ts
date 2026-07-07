@@ -5,6 +5,8 @@ import { config } from "../config.js";
 import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type PageMap, type RouteResult, type RouteStep } from "./mapGraph.js";
 import { routeOnGrid, renderGridAscii } from "./grid/gridRouter.js";
 import type { GridMap } from "./grid/types.js";
+import { routeUnified } from "./graph/router.js";
+import type { UnifiedGraph } from "./graph/types.js";
 
 /**
  * Builds and serves a room→page index so a "wie komme ich von X nach Y" query
@@ -100,6 +102,33 @@ export class NavIndex {
     for (const g of data.gridMaps ?? []) this.gridByPage.set(g.page, g);
   }
   get size() { return this.rooms.length; }
+
+  // Merged per-region graphs (wiki + marcopolo), loaded lazily from _navgraph/.
+  private regionGraphs?: UnifiedGraph[];
+  private async ensureRegionGraphs(): Promise<UnifiedGraph[]> {
+    if (this.regionGraphs) return this.regionGraphs;
+    this.regionGraphs = [];
+    const dir = path.join(path.resolve(config.kbDir), "_navgraph");
+    if (existsSync(dir)) {
+      for (const e of await readdir(dir)) {
+        if (!e.endsWith(".json")) continue;
+        try { this.regionGraphs.push(JSON.parse(await readFile(path.join(dir, e), "utf8")) as UnifiedGraph); }
+        catch { /* skip a malformed artifact */ }
+      }
+    }
+    return this.regionGraphs;
+  }
+
+  /** LAST-resort routing over the merged region graphs (wiki + marcopolo
+   *  fallback edges). Only reached after the authoritative wiki routers fail, so
+   *  it can complete a gap-blocked trip but never override a working route. */
+  private async routeViaRegionGraph(fromQ: string, toQ: string): Promise<RouteResult | null> {
+    for (const g of await this.ensureRegionGraphs()) {
+      const r = routeUnified(g, fromQ, toQ);
+      if (r.ok && (r.steps ?? []).some((s) => s.source === "marcopolo")) return r;
+    }
+    return null;
+  }
 
   private pagesFor(q: string): Set<string> {
     const ql = deumlaut(q);
@@ -255,7 +284,11 @@ export class NavIndex {
     const fm = this.endpointPages(fromQ), tm = this.endpointPages(toQ);
     const shared = [...fm.keys()].filter((p) => tm.has(p));
     // No single page holds both endpoints → the trip spans several maps.
-    if (!shared.length) return this.routeCrossPage(fromQ, toQ);
+    if (!shared.length) {
+      const cross = await this.routeCrossPage(fromQ, toQ);
+      if (cross.ok) return cross;
+      return (await this.routeViaRegionGraph(fromQ, toQ)) ?? cross;
+    }
     // Is an endpoint its OWN area (a map page, e.g. "Borsippa")? Then it's a
     // cross-area trip and the location hint — usually the START's region — must
     // not pin us to the wrong page. For a within-area destination ("Hafen" in
@@ -294,6 +327,8 @@ export class NavIndex {
     // rooms that merely happen to co-occur) — try stitching across maps instead.
     const cross = await this.routeCrossPage(fromQ, toQ);
     if (cross.ok) return cross;
+    const viaGraph = await this.routeViaRegionGraph(fromQ, toQ);
+    if (viaGraph) return viaGraph;
     return { ok: false, ambiguous: !tried || scored.length > 0 };
   }
 

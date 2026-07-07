@@ -2,7 +2,9 @@ import { buildIndex, indexExists } from "./vectorstore.js";
 import { buildCatalog } from "./catalog.js";
 import { buildCategoryVectors } from "./catVectors.js";
 import { buildNavIndex } from "./nav/navIndex.js";
+import { buildRegionGraphs } from "./nav/graph/build.js";
 import { config } from "./config.js";
+import path from "node:path";
 
 /**
  * Build (or rebuild) the Unitopia OKF vector index plus the page catalog /
@@ -27,6 +29,8 @@ async function main() {
   }
   await buildCatalog();
   await buildNavIndex();
+  // Merged per-region nav graphs (wiki + marcopolo fallback) for the router.
+  await buildRegionGraphs(path.resolve(config.kbDir), (m) => console.log(m));
 }
 
 main().catch((err) => {

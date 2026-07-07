@@ -76,16 +76,25 @@ export function mergeGraphs(region: string, wiki: GraphPart[], marco: GraphPart[
     if (target) target.sources.push(...n.sources);
   }
 
-  // Edges: wiki verbatim, then marcopolo remapped as fallback (deduped).
-  const wikiPairs = new Set(wikiEdges.map((e) => `${e.from}>${e.to}`));
+  // Edges: wiki verbatim, then marcopolo remapped as fallback. A marcopolo edge
+  // is dropped when the wiki ALREADY states a KNOWN command for that (from,to) —
+  // wiki wins. But when the wiki edge is HIDDEN (command null: the wiki map marks
+  // the move `'`/dot = "unknown"), a marcopolo edge that DOES name a command is
+  // exactly the missing information, so it is kept as a clarification (priority 2,
+  // the router can prefer it). New pairs are added as fallback connectivity.
   const edges: NavEdge[] = [...wikiEdges];
-  const seen = new Set(wikiPairs);
+  const wikiCmd = new Map<string, string | null>();
+  for (const e of wikiEdges) if (!wikiCmd.has(`${e.from}>${e.to}`)) wikiCmd.set(`${e.from}>${e.to}`, e.command);
+  const added = new Set<string>();
   for (const e of marcoEdges) {
     const from = resolve.get(e.from)!, to = resolve.get(e.to)!;
     if (from === to) continue; // collapsed to same room
     const key = `${from}>${to}`;
-    if (seen.has(key)) continue; // wiki (or an earlier marcopolo edge) already has it
-    seen.add(key);
+    const wc = wikiCmd.get(key);
+    if (wc !== undefined && wc !== null) continue; // wiki already knows this move
+    if (wc === null && e.command === null) continue; // both unknown — nothing to add
+    if (added.has(key) && wc === undefined) continue; // dedup marcopolo-only pairs
+    added.add(key);
     edges.push({ ...e, from, to });
   }
 

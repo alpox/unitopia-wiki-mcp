@@ -31,14 +31,11 @@ test("merge: marcopolo fills wiki gaps, reconciled structurally + by name", () =
   const toWasserfall = g.edges.find((e) => e.from === bach!.id && e.origin === "marcopolo");
   assert.ok(toWasserfall, "Bach gained a marcopolo fallback edge");
 
-  // Wiki authority preserved: every wiki edge survives verbatim at priority 1,
-  // and no marcopolo edge duplicates a wiki (from,to) pair.
+  // Wiki authority preserved: every wiki edge survives verbatim at priority 1.
   for (const e of wiki.edges) assert.ok(g.edges.some((x) => x.from === e.from && x.to === e.to && x.origin === "wiki"), "wiki edge kept");
-  const pairs = new Set<string>();
-  for (const e of g.edges) {
-    const k = `${e.from}>${e.to}`;
-    assert.ok(!pairs.has(k), "no duplicate (from,to) across origins");
-    pairs.add(k);
-  }
+  // A marcopolo edge never duplicates a wiki edge that already names a command —
+  // it only appears for a NEW pair or to CLARIFY a hidden (command null) wiki move.
+  const wikiKnown = new Set(wiki.edges.filter((e) => e.command !== null).map((e) => `${e.from}>${e.to}`));
+  for (const e of g.edges) if (e.origin === "marcopolo") assert.ok(!wikiKnown.has(`${e.from}>${e.to}`), "marcopolo never overrides a known wiki command");
   assert.ok(g.edges.some((e) => e.origin === "marcopolo"), "marcopolo fallback edges present");
 });

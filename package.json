@@ -20,6 +20,8 @@
     "crawl": "tsx src/crawler/index.ts",
     "crawl:full": "tsx src/crawler/index.ts --full",
     "crawl:gridmaps": "tsx src/crawler/gridMapsMain.ts",
+    "crawl:marcopolo": "tsx src/crawler/marcopoloMain.ts",
+    "build:navgraph": "tsx src/nav/graph/buildMain.ts",
     "enrich": "tsx src/enrich.ts",
     "fix-escapes": "tsx src/fixEscapes.ts",
     "ingest": "tsx src/ingest.ts",
