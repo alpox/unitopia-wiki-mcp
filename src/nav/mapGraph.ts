@@ -11,7 +11,11 @@ const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"
 // Underscore appears as map decoration on some maps (e.g. "\_'\_" diagonals on
 // the Burg Tregyln map). It carries no direction, but it must be an allowed
 // grid char or the row fails the whole-line class test and splits the map.
-const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+0-9A-Z˄˅<>▼◄►▲${BOX}]`);
+// `^`/`v` are ASCII stand-ins some maps use for the ˄/˅ up/down arrows (e.g.
+// Knossos' Druidengilde sub-map mixes both). Allowed as grid decoration so a
+// row like "   ^|        ˄" or "   |   .|˄   v" doesn't fail the class test and
+// split the map, orphaning its top half from the legend below.
+const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+0-9A-Z˄˅^v<>▼◄►▲${BOX}]`);
 // A map row must contain at least one connector glyph (otherwise a row of pure
 // labels/spaces would be mistaken for map art). Box-drawing chars count too:
 // maps drawn with │─┌┼ often have corner-only rows ("┌┼┐", "┌┘ ' ˄") that carry
@@ -63,10 +67,11 @@ export interface RouteResult {
 const OFF: Record<string, [number, number]> = { E: [0, 1], W: [0, -1], N: [-1, 0], S: [1, 0], NE: [-1, 1], SW: [1, -1], NW: [-1, -1], SE: [1, 1] };
 const COMPASS: Record<string, string> = { E: "osten", W: "westen", N: "norden", S: "sueden", NE: "nordosten", SW: "suedwesten", NW: "nordwesten", SE: "suedosten" };
 const OPP: Record<string, string> = { E: "W", W: "E", N: "S", S: "N", NE: "SW", SW: "NE", NW: "SE", SE: "NW" };
-const FLEX = ".'˄˅";
-// Vertical (z-axis) portal glyphs: ˄ Hoch, ˅ Runter. A wire that runs through
-// one is a climb/descent, not a compass move — labelled by travel direction.
-const VERT = "˄˅";
+const FLEX = ".'˄˅^v";
+// Vertical (z-axis) portal glyphs: ˄ Hoch, ˅ Runter (with ASCII ^/v synonyms).
+// A wire that runs through one is a climb/descent, not a compass move — labelled
+// by travel direction.
+const VERT = "˄˅^v";
 const zLabel = (startDir: string, vert: boolean): string =>
   vert ? (startDir === "N" ? "hoch" : startDir === "S" ? "runter" : COMPASS[startDir]) : COMPASS[startDir];
 const wireDirs = (ch: string): string[] =>
@@ -294,6 +299,28 @@ function buildGraph(groups: MapGroup[]) {
         if (!adj.get(n.gid)!.some((x) => x.to === entry)) adj.get(n.gid)!.push({ to: entry, dir: null, hidden: false, transition: `Übergang nach ${nodes.get(entry)!.name ?? anchor}` });
         if (!adj.get(entry)!.some((x) => x.to === n.gid)) adj.get(entry)!.push({ to: n.gid, dir: null, hidden: false, transition: `Übergang nach ${n.name ?? groups[n.gi].anchor}` });
       }
+    }
+  }
+  // Name-based cross-reference bridges. A letter-labelled node often names a room
+  // that really lives on ANOTHER sub-map (e.g. a building's "K Platz des Talos"
+  // is the Stadtplan's numbered "Platz des Talos" hub). Such cross-refs commonly
+  // link to the external page URL (/knossos.md) instead of an in-page #anchor, so
+  // the anchor bridge above misses them — leaving a sub-map reachable ONLY through
+  // whatever DID use a proper #anchor (the Kanalisation), which is why routes to
+  // the Druidengilde detoured through the sewer. Bridge a single-letter cross-ref
+  // to the numbered room of the same name when that room lives on exactly one
+  // other sub-map (unambiguous), so the plaza hub reconnects the buildings.
+  const realByName = new Map<string, GNode[]>();
+  for (const n of nodes.values()) if (n.name && n.label && /^\d+$/.test(n.label)) {
+    const k = deumlaut(n.name); const arr = realByName.get(k); if (arr) arr.push(n); else realByName.set(k, [n]);
+  }
+  for (const n of [...nodes.values()]) {
+    if (!n.name || !n.label || !/^[A-Z]$/.test(n.label)) continue; // source = single-letter cross-ref
+    const targets = (realByName.get(deumlaut(n.name)) ?? []).filter((m) => m.gi !== n.gi);
+    if (new Set(targets.map((m) => m.gi)).size !== 1) continue; // none, or ambiguous across sub-maps
+    for (const m of targets) {
+      if (!adj.get(n.gid)!.some((x) => x.to === m.gid)) adj.get(n.gid)!.push({ to: m.gid, dir: null, hidden: false, transition: `Übergang nach ${m.name}` });
+      if (!adj.get(m.gid)!.some((x) => x.to === n.gid)) adj.get(m.gid)!.push({ to: n.gid, dir: null, hidden: false, transition: `Übergang nach ${n.name}` });
     }
   }
   return { nodes, adj, grids };
