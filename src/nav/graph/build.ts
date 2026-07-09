@@ -11,6 +11,7 @@ import path from "node:path";
 import { pageGraphIR } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
 import { buildMcGraph } from "../marcopolo/graph.js";
+import { crossPageEdges, type BuiltMcMap } from "../marcopolo/stitch.js";
 import { mergeGraphs, type GraphPart } from "./merge.js";
 import { slug as okfSlug } from "../../crawler/okf.js";
 import type { UnifiedGraph } from "./types.js";
@@ -44,15 +45,22 @@ export async function buildRegionGraphs(kbDir: string, log: (m: string) => void 
   for (const regionSlug of await readdir(mcRoot)) {
     const rdir = path.join(mcRoot, regionSlug);
     if (!(await stat(rdir)).isDirectory()) continue;
+    const built: BuiltMcMap[] = [];
     for (const f of await readdir(rdir)) {
       if (!f.endsWith(".md") || f === "index.md") continue;
       const md = await readFile(path.join(rdir, f), "utf8");
       const region = regionTags(md)[0] ?? regionSlug;
       displayName.set(regionSlug, region);
-      const mc = parseMcOkf(md, region, f.replace(/\.md$/, ""), RESOURCE_RE.exec(md)?.[1] ?? "");
+      const slug = f.replace(/\.md$/, "");
+      const mc = parseMcOkf(md, region, slug, RESOURCE_RE.exec(md)?.[1] ?? "");
       const g = buildMcGraph(mc);
       (mcByRegion.get(regionSlug) ?? mcByRegion.set(regionSlug, []).get(regionSlug)!).push({ nodes: g.nodes, edges: g.edges });
+      built.push({ slug, m: mc, nodes: g.nodes, nodeCross: g.nodeCross });
     }
+    // Cross-page transition edges tie the region's maps together (climb from one
+    // map onto the next). Added as an edge-only part so the merge remaps them too.
+    const cross = crossPageEdges(built);
+    if (cross.length) mcByRegion.get(regionSlug)!.push({ nodes: [], edges: cross });
   }
 
   // 2. Wiki map-pages grouped by the SAME region slugs (only regions that have

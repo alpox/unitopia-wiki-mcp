@@ -88,6 +88,32 @@ export function buildMcGraph(m: McMap): Built {
     }
   }
 
+  // Anonymous path junctions: a bare glyph that is NOT a legend room and NOT a
+  // link, yet sits ON the wire mesh joining other rooms — e.g. Wasserfall's `p`,
+  // which links `w` (Hinter dem Wasserfall) down to `D` (climb to Drachenkopf).
+  // Without it the two sides never connect. Recognized only when ≥2 solid
+  // line/arrow wires actually run INTO the cell, so a stray decorative letter
+  // (0–1 wire) is left alone. Name stays null (an unlabelled junction).
+  const SOLID = "-|/\\^v<>";
+  for (let r = 0; r < H; r++) {
+    for (let c = 0; c < W; c++) {
+      if (cellNode.has(`${r},${c}`)) continue;
+      const ch = at(r, c);
+      if (!/^[A-Za-z0-9]$/.test(ch) || legendKeys.has(ch) || linkAt.has(`${r},${c}`)) continue;
+      let wires = 0;
+      for (const dir of Object.keys(OFF)) {
+        const g = at(r + OFF[dir][0], c + OFF[dir][1]);
+        if (!SOLID.includes(g)) continue;
+        const ax = axesOf(g);
+        if (ax === "any" || (ax && ax.includes(dir))) wires++;
+      }
+      if (wires < 2) continue;
+      const id = mkId(ch, r, c);
+      nodes.push({ id, name: null, aliases: [], region, sources: [{ origin: "marcopolo", page: slug, label: ch }] });
+      cellNode.set(`${r},${c}`, id);
+    }
+  }
+
   // Trace an edge from each node in all 8 directions until another node is hit.
   const edges: NavEdge[] = [];
   const seen = new Set<string>();
@@ -96,6 +122,15 @@ export function buildMcGraph(m: McMap): Built {
     if (from === to || seen.has(k)) return;
     seen.add(k);
     edges.push(edge(from, to, cmd, "marcopolo", slug, { hint }));
+  };
+
+  // Does a node's legend hint that reaching/leaving it is a climb (not a plain
+  // step)? Used to decide whether a flow-arrow run is a climb rather than a walk.
+  const nodeById = new Map(nodes.map((x) => [x.id, x]));
+  const isClimbNode = (id: string): boolean => {
+    const lbl = nodeById.get(id)?.sources[0]?.label?.[0] ?? "";
+    const e = m.legend[lbl];
+    return /klettern/i.test(e?.desc ?? "") || (e?.climbHints.length ?? 0) > 0;
   };
 
   for (const n of nodes) {
@@ -111,7 +146,8 @@ export function buildMcGraph(m: McMap): Built {
         while (rr >= 0 && rr < H && cc >= 0 && cc < W) {
           const other = cellNode.get(`${rr},${cc}`);
           if (other && other !== n.id) {
-            emit(n.id, other, commandFor(dir, glyphs), hintFor(dir, glyphs, m, n));
+            const climb = isClimbNode(n.id) || isClimbNode(other);
+            emit(n.id, other, commandFor(dir, glyphs, climb), hintFor(dir, glyphs, climb));
             break;
           }
           const ax = axesOf(at(rr, cc));
@@ -183,24 +219,30 @@ function customInstruction(desc: string): string {
  * a stair-like "hoch"/"runter" — NOT necessarily a climb. Marcopolo does not
  * reliably distinguish walking up stairs from climbing from a fully custom verb,
  * so we emit the common case ("hoch"/"runter") and let `hintFor` flag when the
- * legend hints it might really be a climb/special command. A dotted run (`.`) has
+ * legend hints it might really be a climb/special command. A horizontal flow
+ * arrow (`<`/`>`) over a climb-hinted endpoint is a climb the mapper drew
+ * sideways (e.g. Drachenkopf's `S>d>D`, where `S` = "Sims, hier kann man wieder
+ * runterklettern"): the geometry direction ("osten") is then meaningless, so the
+ * command is unknown (null) and `hintFor` flags the climb. A dotted run (`.`) has
  * no clear direction → command unknown (null).
  */
-function commandFor(dir: string, glyphs: string[]): string | null {
+function commandFor(dir: string, glyphs: string[], climb: boolean): string | null {
   const vert = glyphs.includes("^") || glyphs.includes("v");
+  const horizFlow = glyphs.includes("<") || glyphs.includes(">");
   if (vert) return dir === "N" ? "hoch" : dir === "S" ? "runter" : COMPASS[dir];
+  if (horizFlow && climb) return null; // sideways-drawn climb: geometry direction is unreliable
   if (glyphs.includes(".")) return null; // dotted/current: no clear command
   return COMPASS[dir];
 }
 
 /** A soft, explicitly-uncertain hint — never asserts a specific climb verb. Only
- *  attached when the source legend text suggests the move is more than a plain
- *  step, or the run is a dotted current with no clear command. */
-function hintFor(dir: string, glyphs: string[], m: McMap, from: NavNode): string | null {
+ *  attached when an endpoint's legend suggests the move is a climb (drawn either
+ *  vertically `^`/`v` or sideways with a flow arrow `<`/`>`), or the run is a
+ *  dotted current with no clear command. */
+function hintFor(dir: string, glyphs: string[], climb: boolean): string | null {
   const vert = glyphs.includes("^") || glyphs.includes("v");
-  const legendLabel = from.sources[0]?.label?.[0] ?? "";
-  const climbHinted = /klettern/i.test(m.legend[legendLabel]?.desc ?? "") || (m.legend[legendLabel]?.climbHints.length ?? 0) > 0;
-  if (vert && climbHinted) return "evtl. klettern oder Sonderbefehl – genauer Befehl unklar";
+  const horizFlow = glyphs.includes("<") || glyphs.includes(">");
+  if ((vert || horizFlow) && climb) return "evtl. klettern oder Sonderbefehl – genauer Befehl unklar";
   if (glyphs.includes(".")) return `Richtung ${COMPASS[dir]} – Befehl unklar`;
   return null;
 }

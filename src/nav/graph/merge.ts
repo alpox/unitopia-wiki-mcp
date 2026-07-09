@@ -37,8 +37,19 @@ export function mergeGraphs(region: string, wiki: GraphPart[], marco: GraphPart[
   // wiki room that leads there. Then by name as a fallback.
   const wikiByPortal = new Map<string, string>();
   for (const n of wikiNodes) for (const p of n.portals ?? []) if (!wikiByPortal.has(p)) wikiByPortal.set(p, n.id);
+  // A normalized name is only a usable bind key when it identifies ONE wiki ROOM.
+  // When several distinct rooms share it (e.g. Vaniorh's separate "Handelsweg"
+  // tiles), picking the first is arbitrary and welds marcopolo connectivity onto
+  // the wrong room, inventing false shortcuts. Such ambiguous names are excluded
+  // from name-binding — those marcopolo nodes stay synthetic (or bind via portal).
+  // A room is (page, sub-map group, label): one room may be DRAWN as several
+  // cells (distinct node ids) — those collapse here, so a multi-cell room like
+  // "Bach" is NOT ambiguous, but two differently-labelled tiles are.
+  const roomKey = (n: NavNode) => `${n.sources[0]?.page}#${n.id.slice(n.id.indexOf("#") + 1).split(":")[0]}#${n.sources[0]?.label}`;
+  const wikiRoomsByName = new Map<string, Set<string>>();
+  for (const n of wikiNodes) if (n.name) (wikiRoomsByName.get(norm(n.name)) ?? wikiRoomsByName.set(norm(n.name), new Set()).get(norm(n.name))!).add(roomKey(n));
   const wikiByName = new Map<string, string>();
-  for (const n of wikiNodes) if (n.name) if (!wikiByName.has(norm(n.name))) wikiByName.set(norm(n.name), n.id);
+  for (const n of wikiNodes) if (n.name && wikiRoomsByName.get(norm(n.name))!.size === 1 && !wikiByName.has(norm(n.name))) wikiByName.set(norm(n.name), n.id);
 
   // Resolve every marcopolo node id to its unified id. A marcopolo node binds to
   // a wiki node that shares a gateway target (structural, reliable) OR, failing

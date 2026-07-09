@@ -32,7 +32,22 @@ function resolveNode(g: UnifiedGraph, q: string): NavNode | null {
   return sub.length ? pick(sub) : null;
 }
 
-const cost = (e: NavEdge) => (e.transition ? 3 : 0) + (e.origin === "marcopolo" ? 2 : 1);
+/**
+ * Edge cost. Wiki (authoritative) is cheaper than marcopolo; a map transition
+ * costs a little extra. A command-unknown move gets a SMALL surcharge so that,
+ * all else equal, a move with a known command wins — but it stays a perfectly
+ * usable path. A horizontal `'`/`..` run in a wiki map is NOT an error: it just
+ * says "a path exists here, command unknown", and a marcopolo legend hint often
+ * supplies what the command should be (the merge surfaces that as a hinted/known
+ * edge for the same move). So a hinted unknown (marcopolo climb, wiki `˄/˅`) is
+ * cheaper than a bare one, but neither is penalized enough to force a long detour.
+ * See [[marcopolo-secondary-maps]].
+ */
+const cost = (e: NavEdge): number => {
+  const base = (e.transition ? 3 : 0) + (e.origin === "marcopolo" ? 2 : 1);
+  if (e.command !== null || e.transition) return base; // concrete move, or a transition (priced above)
+  return base + (e.hint ? 1 : 2); // command unknown: mild nudge toward known/hinted moves
+};
 
 /** Dijkstra over the unified graph. Emits `RouteStep`s carrying the edge command
  *  (or its hint when the command is unknown) plus the source origin. */
