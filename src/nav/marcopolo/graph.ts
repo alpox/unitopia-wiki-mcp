@@ -7,7 +7,7 @@
  * rule that an unknown transfer is still an edge. No source ASCII is retained in
  * the output — only nodes and edges. See [[marcopolo-secondary-maps]].
  */
-import type { McMap } from "./extract.js";
+import type { McMap, McLegendEntry } from "./extract.js";
 import type { NavEdge, NavNode } from "../graph/types.js";
 import { edge } from "../graph/types.js";
 
@@ -60,7 +60,23 @@ export function buildMcGraph(m: McMap): Built {
   const nodeCross = new Map<string, string>(); // node id → cross page (if any)
   const mkId = (label: string, r: number, c: number) => `mc:${region.toLowerCase()}:${slug.toLowerCase()}#${label}@${r},${c}`;
 
-  const legendKeys = new Set(Object.keys(m.legend));
+  // Colour is part of a room's identity: a letter drawn in several colours names
+  // several DISTINCT rooms. Pick the legend entry by the cell's colour (only
+  // stored for ambiguous letters; single-entry letters take their one entry).
+  const colorAt = new Map<string, string>();
+  for (const cc of m.cellColors) colorAt.set(`${cc.row},${cc.col}`, cc.color);
+  const byLabel = new Map<string, McLegendEntry[]>();
+  for (const e of m.legend) (byLabel.get(e.label) ?? byLabel.set(e.label, []).get(e.label)!).push(e);
+  const entryFor = (label: string, r: number, c: number): McLegendEntry | undefined => {
+    const entries = byLabel.get(label);
+    if (!entries?.length) return undefined;
+    if (entries.length === 1) return entries[0];
+    const col = colorAt.get(`${r},${c}`);
+    return entries.find((e) => e.color === col) ?? entries[0];
+  };
+  const nodeEntry = new Map<string, McLegendEntry | undefined>(); // node id → its legend room
+
+  const legendKeys = new Set(byLabel.keys());
   for (let r = 0; r < H; r++) {
     for (let c = 0; c < W; c++) {
       const key = `${r},${c}`;
@@ -74,7 +90,9 @@ export function buildMcGraph(m: McMap): Built {
       const label = isLinkStart ? link!.label : ch;
       const id = mkId(label, r, c);
       const legendLabel = isLinkStart ? label[0] : ch; // single-letter legend lookup
-      const name = short(m.legend[legendLabel]?.desc ?? "") || (isLinkStart ? label : ch);
+      const ent = entryFor(legendLabel, r, c);
+      nodeEntry.set(id, ent);
+      const name = short(ent?.desc ?? "") || (isLinkStart ? label : ch);
       nodes.push({
         id,
         name: name || null,
@@ -126,10 +144,8 @@ export function buildMcGraph(m: McMap): Built {
 
   // Does a node's legend hint that reaching/leaving it is a climb (not a plain
   // step)? Used to decide whether a flow-arrow run is a climb rather than a walk.
-  const nodeById = new Map(nodes.map((x) => [x.id, x]));
   const isClimbNode = (id: string): boolean => {
-    const lbl = nodeById.get(id)?.sources[0]?.label?.[0] ?? "";
-    const e = m.legend[lbl];
+    const e = nodeEntry.get(id);
     return /klettern/i.test(e?.desc ?? "") || (e?.climbHints.length ?? 0) > 0;
   };
 
@@ -172,8 +188,7 @@ export function buildMcGraph(m: McMap): Built {
   for (const [k, id] of cellNode) (cellsById.get(id) ?? cellsById.set(id, []).get(id)!).push(k.split(",").map(Number));
   const GAP = 5;
   for (const n of nodes) {
-    const legendLabel = (labelOf.get(n.id) ?? "")[0] ?? "";
-    const desc = m.legend[legendLabel]?.desc ?? "";
+    const desc = nodeEntry.get(n.id)?.desc ?? "";
     if (!SPECIAL_EXIT_RE.test(desc)) continue;
     const instr = customInstruction(desc);
     for (const [r, c] of cellsById.get(n.id) ?? []) {

@@ -68,7 +68,11 @@ export function crossPageEdges(maps: BuiltMcMap[]): NavEdge[] {
   const bySlug = new Map(maps.map((x) => [pnorm(x.slug), x]));
   const descOf = (mp: BuiltMcMap, id: string) => {
     const label = mp.nodes.find((n) => n.id === id)?.sources[0]?.label?.[0] ?? "";
-    return mp.m.legend[label]?.desc ?? "";
+    const entries = mp.m.legend.filter((e) => e.label === label);
+    if (entries.length <= 1) return entries[0]?.desc ?? "";
+    const at = /@(\d+),(\d+)$/.exec(id); // colour-disambiguate by the node's cell
+    const col = at ? mp.m.cellColors.find((cc) => cc.row === +at[1] && cc.col === +at[2])?.color : undefined;
+    return (entries.find((e) => e.color === col) ?? entries[0]).desc;
   };
   // Directed boundary rooms per map: node id → target page (normalized).
   const exits = (mp: BuiltMcMap) => [...mp.nodeCross].map(([id, page]) => ({ id, page: pnorm(page) }));

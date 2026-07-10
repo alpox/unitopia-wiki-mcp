@@ -224,6 +224,37 @@ function buildGraph(groups: MapGroup[]) {
     const nearVert = (r: number, c: number) =>
       VERT.includes(at(r, c)) || VERT.includes(at(r, c - 1)) || VERT.includes(at(r, c + 1)) ||
       VERT.includes(at(r - 1, c)) || VERT.includes(at(r + 1, c));
+    // A wiki '+'/'┼'/'╬' is drawn as an all-directions junction, but where two
+    // DIFFERENT features cross — a Bach (water) flowing across a Weg — it is a
+    // *crossover*, not a junction: the lines pass over/under one another and do
+    // NOT interconnect (you'd have to klettern between them; marcopolo draws the
+    // Bach a level below, reached only via "kletter runter/hoch", never a plain
+    // walk — the legend even says the Bach flows "unter dem Handelsweg"). Flag a
+    // full 4-way cross whose ONE axis is water and the other is not, so the tracer
+    // passes straight through it instead of turning onto the crossing line. A '+'
+    // with no water axis (Tadmor's "8--+--8" real junction) is left untouched, so
+    // this can never mis-split a genuine junction. See [[marcopolo-secondary-maps]].
+    const CROSS = "+┼╬", HWIRE = "-─═►◄><+┼╬", VWIRE = "|│║▲▼˄˅^v+┼╬";
+    const walkAxis = (r: number, c: number, dir: string): GNode | null => {
+      const [dr, dc] = OFF[dir]; let rr = r + dr, cc = c + dc;
+      for (let g = 0; g < 200; g++) {
+        const ch = at(rr, cc);
+        if (isNode(ch) || /[0-9]/.test(ch)) return nodeAt(rr, cc);
+        if (wireDirs(ch).length === 0) return null; // ran off the wire before a room
+        rr += dr; cc += dc;
+      }
+      return null;
+    };
+    const isWater = (n: GNode | null) => !!n?.name && WATER_RE.test(n.name);
+    const crossover = new Set<string>();
+    for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) {
+      if (!CROSS.includes(at(r, c))) continue;
+      if (!(VWIRE.includes(at(r - 1, c)) && VWIRE.includes(at(r + 1, c)) &&
+            HWIRE.includes(at(r, c - 1)) && HWIRE.includes(at(r, c + 1)))) continue; // not a full 4-way cross
+      const hW = isWater(walkAxis(r, c, "E")) || isWater(walkAxis(r, c, "W"));
+      const vW = isWater(walkAxis(r, c, "N")) || isWater(walkAxis(r, c, "S"));
+      if (hW !== vW) crossover.add(`${r},${c}`); // exactly one crossing line is water → crossover
+    }
     for (const id of local) {
       const n = nodes.get(id)!;
       const ce = n.cEnd ?? n.c;
@@ -248,16 +279,20 @@ function buildGraph(groups: MapGroup[]) {
         if (wireDirs(fch).length === 0) continue;
         const seen = new Set([`${fr},${fc}`]);
         // 5th flag: the wire has crossed a ˄/˅ portal → this is a hoch/runter move.
-        const q: [number, number, boolean, boolean, boolean][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || nearVert(fr, fc), nearVert(fr, fc)]];
+        const q: [number, number, boolean, boolean, boolean, string][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || nearVert(fr, fc), nearVert(fr, fc), startDir]];
         while (q.length) {
-          const [r, c, hasApos, hasDir, vert] = q.shift()!;
-          for (const wd of wireDirs(at(r, c))) {
+          const [r, c, hasApos, hasDir, vert, adir] = q.shift()!;
+          // At a flagged crossover '+', do NOT turn: continue straight in the
+          // arrival direction, so the Weg passes over the Bach (and the Bach
+          // under the Weg) without the two ever interconnecting.
+          const cellDirs = crossover.has(`${r},${c}`) ? wireDirs(at(r, c)).filter((d) => d === adir) : wireDirs(at(r, c));
+          for (const wd of cellDirs) {
             const [dr, dc] = OFF[wd], nr = r + dr, nc = c + dc, nch = at(nr, nc);
             if (isNode(nch) || /[0-9]/.test(nch)) {
               if (underCrossed(nr, nc, wd)) {
                 // pass under this node, continue straight in the same direction
                 const ar = nr + dr, ac = nc + dc, akey = `${ar},${ac}`;
-                if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir, vert]); }
+                if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir, vert, wd]); }
                 continue;
               }
               // A "'"/dot on the path makes the step's COMMAND unknown (the legend:
@@ -270,7 +305,7 @@ function buildGraph(groups: MapGroup[]) {
             const key = `${nr},${nc}`; if (seen.has(key)) continue;
             const nd = wireDirs(nch); if (nd.length === 0) continue;
             if (!FLEX.includes(nch) && !FLEX.includes(at(r, c)) && !nd.includes(OPP[wd])) continue;
-            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || nearVert(nr, nc), vert || nearVert(nr, nc)]);
+            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || nearVert(nr, nc), vert || nearVert(nr, nc), wd]);
           }
         }
         for (const [to, e] of found) if (!adj.get(id)!.some((x) => x.to === to)) adj.get(id)!.push({ to, dir: e.dir, hidden: e.hidden, transition: null });
@@ -679,7 +714,7 @@ export function formatRoute(r: RouteResult): string {
 /** Water/terrain name fragments — a node whose name matches these should be a
  *  dead-end tile you step onto, NOT a through-corridor. If such a node has a
  *  high degree it's usually a crossing the parser wrongly wired through. */
-const WATER_RE = /fluss|ufer|dijala|graben|bucht|passage|kanal|see|teich|wasser|moat|steg|furt|brücke|bruecke/i;
+const WATER_RE = /bach|fluss|ufer|dijala|graben|bucht|passage|kanal|see|teich|wasser|moat|steg|furt|brücke|bruecke/i;
 
 export interface PageDiagnostics {
   groups: number;
