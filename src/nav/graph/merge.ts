@@ -13,7 +13,7 @@
  * reachable places. A marcopolo edge is dropped if a wiki edge already joins the
  * same (from,to) pair.
  */
-import { deumlaut } from "../mapGraph.js";
+import { deumlaut, roomTokens, tokenOverlap } from "../mapGraph.js";
 import type { NavEdge, NavNode, UnifiedGraph, Origin } from "./types.js";
 
 export interface GraphPart {
@@ -79,6 +79,99 @@ export function mergeGraphs(region: string, wiki: GraphPart[], marco: GraphPart[
     }
   }
 
+  // Graph-alignment pass (STRUCTURAL): bind a still-synthetic marcopolo room to
+  // an unbound wiki room when they share ≥2 reconciled neighbours — a strong
+  // 2-hop signal that they are the same place, catching rooms that name/portal
+  // matching missed. Iterated to a fixpoint (each new bind can anchor the next).
+  // It DEFAULTS to leaving a node synthetic — a miss is safer than a wrong weld —
+  // so an under-anchored room (e.g. wiki "14 Handelsweg (Lawinengefahr!)", whose
+  // only reconciled neighbour is Bach) is correctly NOT bound. See
+  // [[marcopolo-secondary-maps]].
+  const undirected = (edges: NavEdge[]) => {
+    const a = new Map<string, Set<string>>();
+    const add = (x: string, y: string) => (a.get(x) ?? a.set(x, new Set()).get(x)!).add(y);
+    for (const e of edges) { add(e.from, e.to); add(e.to, e.from); }
+    return a;
+  };
+  const wikiAdj = undirected(wikiEdges);
+  const marcoAdj = undirected(marcoEdges);
+  const wikiIds = new Set(wikiNodes.map((n) => n.id));
+  const wikiName = new Map(wikiNodes.map((n) => [n.id, n.name]));
+  const boundWiki = new Set<string>(); // wiki ids already claimed by a marcopolo room
+  for (const uid of resolve.values()) if (wikiIds.has(uid)) boundWiki.add(uid);
+  // Two NAMED rooms may only be welded by structure when their names also share a
+  // token — structure alone must not fuse semantically-different rooms (e.g.
+  // "Oststadtor" vs "Treppe nach Tadmor"). If either side is anonymous, the strong
+  // structural signal decides on its own (both are just path/junction cells).
+  const compatible = (m: NavNode, x: string): boolean => {
+    const xn = wikiName.get(x);
+    if (!m.name || !xn) return true;
+    return tokenOverlap(roomTokens(m.name), xn);
+  };
+  // Wiki rooms grouped by normalized name (a room = several cells), for the
+  // distinctive-token rule below.
+  const roomsByName = new Map<string, { tokens: string[]; ids: string[] }>();
+  for (const n of wikiNodes) if (n.name) {
+    const nn = norm(n.name);
+    const r = roomsByName.get(nn) ?? { tokens: roomTokens(n.name), ids: [] };
+    r.ids.push(n.id); roomsByName.set(nn, r);
+  }
+  const rooms = [...roomsByName.values()];
+  const prefixMatch = (a: string, b: string) => a === b || (a.length >= 5 && b.startsWith(a)) || (b.length >= 5 && a.startsWith(b));
+  const boundRoom = (r: { ids: string[] }) => r.ids.some((id) => boundWiki.has(id));
+  // A wiki room can be DRAWN as several cells (e.g. Bach "15--..--15"); an anchor's
+  // neighbours must be taken over ALL its cells, else a node adjacent to a different
+  // cell of the same room (the Felsterasse `o`, next to the far Bach cell) is missed.
+  const wikiById2 = new Map(wikiNodes.map((n) => [n.id, n]));
+  const cellKey = (n: NavNode) => (n.sources[0]?.label ? `${n.sources[0].page}#${n.sources[0].label}` : n.id);
+  const cellsByRoom = new Map<string, string[]>();
+  for (const n of wikiNodes) (cellsByRoom.get(cellKey(n)) ?? cellsByRoom.set(cellKey(n), []).get(cellKey(n))!).push(n.id);
+  const roomCellsOf = (id: string) => { const n = wikiById2.get(id); return n ? cellsByRoom.get(cellKey(n)) ?? [id] : [id]; };
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const M of marcoNodes) {
+      if (wikiIds.has(resolve.get(M.id)!)) continue; // already wiki-bound
+
+      // Rule A — DISTINCTIVE TOKEN: a token of M's name that identifies exactly ONE
+      // wiki room (rare word, e.g. "lawinen" ⊂ "lawinengefahr") binds M to that room
+      // — but only if it's the sole UNBOUND such room. Common tokens ("borsippa",
+      // matching many rooms) never qualify, and already-bound rooms (Bach,
+      // Wasserfall) drop out — which is what leaves "14 Lawinengefahr" uniquely
+      // identified for marco `L`. Structurally corroborated: [[marcopolo-secondary-maps]].
+      if (M.name) {
+        const matched = new Set<{ tokens: string[]; ids: string[] }>();
+        for (const t of roomTokens(M.name)) {
+          if (t.length < 5) continue; // only long, potentially-distinctive tokens
+          const rs = rooms.filter((r) => r.tokens.some((b) => prefixMatch(t, b)));
+          if (rs.length === 1) matched.add(rs[0]); // this token names exactly one wiki room
+        }
+        const cand = [...matched].filter((r) => !boundRoom(r));
+        if (cand.length === 1) {
+          const X = cand[0].ids[0];
+          resolve.set(M.id, X); for (const id of cand[0].ids) boundWiki.add(id); changed = true;
+          continue;
+        }
+      }
+
+      // Rule B — STRUCTURAL: bind to an unbound wiki room that neighbours ≥2 of M's
+      // reconciled marcopolo neighbours (with the compatible() name-token guard).
+      const recNbrs = new Set<string>();
+      for (const nb of marcoAdj.get(M.id) ?? []) { const u = resolve.get(nb); if (u && wikiIds.has(u)) recNbrs.add(u); }
+      if (recNbrs.size < 2) continue;
+      const score = new Map<string, number>(); // unbound wiki room → how many of recNbrs' ROOMS it neighbours
+      for (const rn of recNbrs) {
+        const nbrs = new Set<string>();
+        for (const cell of roomCellsOf(rn)) for (const x of wikiAdj.get(cell) ?? []) nbrs.add(x);
+        for (const x of nbrs) if (!boundWiki.has(x) && compatible(M, x)) score.set(x, (score.get(x) ?? 0) + 1);
+      }
+      const ranked = [...score.entries()].filter(([, s]) => s >= 2).sort((a, b) => b[1] - a[1]);
+      if (!ranked.length || (ranked[1] && ranked[1][1] === ranked[0][1])) continue; // none, or an ambiguous tie
+      const X = ranked[0][0];
+      resolve.set(M.id, X); boundWiki.add(X); changed = true; // re-point just this room; a shared synthetic stays for its other same-name rooms
+    }
+    if (!changed) break;
+  }
+
   // Record marcopolo source labels onto the wiki nodes they bound to.
   const wikiById = new Map(wikiNodes.map((n) => [n.id, n]));
   for (const n of marcoNodes) {
@@ -103,7 +196,10 @@ export function mergeGraphs(region: string, wiki: GraphPart[], marco: GraphPart[
     const key = `${from}>${to}`;
     const wc = wikiCmd.get(key);
     if (wc !== undefined && wc !== null) continue; // wiki already knows this move
-    if (wc === null && e.command === null) continue; // both unknown — nothing to add
+    if (wc === null && e.command === null && !e.hint) continue; // both unknown AND marcopolo adds no hint — nothing to add
+    // (a marcopolo edge with a climb HINT for the same hidden wiki move IS worth
+    //  keeping — it's what lets the route annotate e.g. "14 ·→ Felsterasse" as a
+    //  kletter runter; see navIndex.ensureClimbHints)
     if (added.has(key) && wc === undefined) continue; // dedup marcopolo-only pairs
     added.add(key);
     edges.push({ ...e, from, to });

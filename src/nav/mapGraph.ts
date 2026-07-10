@@ -263,7 +263,13 @@ function buildGraph(groups: MapGroup[]) {
         const [sr, sc] = OFF[startDir];
         // Probe from the edge of the label span in the travel direction, so a
         // wire starting past a multi-char label ("47--o") is still reached.
-        const fr = n.r + sr, fc = sc > 0 ? ce + 1 : sc < 0 ? n.c - 1 : n.c, fch = at(fr, fc);
+        const fr = n.r + sr;
+        let fc = sc > 0 ? ce + 1 : sc < 0 ? n.c - 1 : n.c;
+        // A vertical probe off a MULTI-char label: the wire may sit under any of the
+        // label's columns (e.g. the "|" under the second digit of "14"), not just the
+        // leftmost — scan the span so a north/south exit isn't missed.
+        if (sc === 0 && ce > n.c) for (let cc = n.c; cc <= ce; cc++) if (wireDirs(at(fr, cc)).length) { fc = cc; break; }
+        const fch = at(fr, fc);
         // If THIS node is flanked by dots (./') on both sides of the probe axis,
         // a perpendicular line is crossing under/over it (e.g. the vertical river
         // ". 8 ." under the Alte Brücke street, or "F-.6..7.-F" horizontally).
@@ -282,10 +288,19 @@ function buildGraph(groups: MapGroup[]) {
         const q: [number, number, boolean, boolean, boolean, string][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || nearVert(fr, fc), nearVert(fr, fc), startDir]];
         while (q.length) {
           const [r, c, hasApos, hasDir, vert, adir] = q.shift()!;
-          // At a flagged crossover '+', do NOT turn: continue straight in the
-          // arrival direction, so the Weg passes over the Bach (and the Bach
-          // under the Weg) without the two ever interconnecting.
-          const cellDirs = crossover.has(`${r},${c}`) ? wireDirs(at(r, c)).filter((d) => d === adir) : wireDirs(at(r, c));
+          // Two kinds of cell are traversed STRAIGHT (only the arrival direction),
+          // never fanned out:
+          //  - a flagged crossover '+': the Weg passes over the Bach without them
+          //    interconnecting;
+          //  - a '/. dotted cell: dots mark a LINEAR "path exists, command unknown"
+          //    run (or a way-extension), NOT a junction. Fanning out across a FIELD
+          //    of dots invents edges that don't exist (e.g. a spurious 14→Wasserfall
+          //    shortcut, or a collapsed 14→Bach, both cutting straight through the
+          //    dot mesh) — a real descent is `14 ·→ Felsterasse ·→ Bach`, two steps.
+          const cch = at(r, c);
+          const cellDirs = crossover.has(`${r},${c}`) || DOTS.includes(cch)
+            ? wireDirs(cch).filter((d) => d === adir)
+            : wireDirs(cch);
           for (const wd of cellDirs) {
             const [dr, dc] = OFF[wd], nr = r + dr, nc = c + dc, nch = at(nr, nc);
             if (isNode(nch) || /[0-9]/.test(nch)) {
@@ -518,8 +533,12 @@ function asciiPath(grids: string[][][], nodes: Map<string, GNode>, pathGids: str
   return out.join("\n");
 }
 
-/** Compute a route between two room names/labels on a single area page. */
-export function routeOnPage(md: string, fromQ: string, toQ: string): RouteResult {
+/** Compute a route between two room names/labels on a single area page.
+ *  `climbHints` (optional, keyed by node gid) lets the caller enrich a HIDDEN
+ *  step leaving that node with a clarification from the merged marcopolo graph —
+ *  e.g. wiki "14 Lawinengefahr"'s unclear `'`/dot exit is really a "kletter
+ *  runter". Annotation only: it never changes the path. See [[marcopolo-secondary-maps]]. */
+export function routeOnPage(md: string, fromQ: string, toQ: string, climbHints?: Map<string, string>): RouteResult {
   const groups = splitGroups(md);
   if (!groups.length) return { ok: false, error: "keine Karte auf dieser Seite" };
   const { nodes, adj, grids } = buildGraph(groups);
@@ -546,7 +565,7 @@ export function routeOnPage(md: string, fromQ: string, toQ: string): RouteResult
   }
   if (!prev.has(t.gid)) return { ok: false, error: "kein zusammenhängender Weg in den Karten gefunden" };
   const steps: RouteStep[] = []; const pathGids = [t.gid]; let cur = t.gid;
-  while (prev.get(cur)) { const { from, e } = prev.get(cur)!; steps.unshift({ dir: e.dir, hidden: e.hidden, transition: e.transition, toName: nodes.get(e.to)?.name ?? null }); pathGids.unshift(from); cur = from; }
+  while (prev.get(cur)) { const { from, e } = prev.get(cur)!; steps.unshift({ dir: e.dir, hidden: e.hidden, transition: e.transition, toName: nodes.get(e.to)?.name ?? null, hint: e.hidden ? climbHints?.get(from) ?? null : null }); pathGids.unshift(from); cur = from; }
   const clear = steps.every((x) => x.dir && !x.hidden && !x.transition);
   return { ok: true, from: s.name ?? s.label ?? fromQ, to: t.name ?? t.label ?? toQ, steps, clear, ascii: asciiPath(grids, nodes, pathGids) };
 }
@@ -673,11 +692,14 @@ export function formatRoute(r: RouteResult): string {
   // command unknown; otherwise the direction is fully unknown.
   const stepLabel = (s: RouteStep): string => {
     if (!s.hidden) return s.dir!;
-    // A ˄/˅ gives the direction (hoch/runter); the "'" only means the exact
-    // COMMAND is unclear — so lead with the direction, then flag it.
+    // A `'`/dotted hidden move carries NO direction — its compass label is pure
+    // geometry and misleading — so never show it. Only a ˄/˅ move conveys a real
+    // hoch/runter. Prefer the marcopolo clarification when present.
+    const vertical = s.dir === "hoch" || s.dir === "runter";
+    if (s.hint) return vertical ? `${s.dir} – ${s.hint} (Wiki-Karte unklar)` : `${s.hint} (Wiki-Karte unklar)`;
     if (s.dir === "hoch") return "hoch (aber Befehl unklar – evtl. »klettere hoch« o. Ä., tüfteln)";
     if (s.dir === "runter") return "runter (aber Befehl unklar – tüfteln)";
-    return "??? unbekannte Richtung/Weg – hier suchen/tüfteln";
+    return "??? unklarer Weg – Richtung nicht ablesbar, hier tüfteln";
   };
   const lines: string[] = [];
   let i = 0, n = 0;

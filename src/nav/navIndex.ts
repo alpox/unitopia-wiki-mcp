@@ -119,6 +119,38 @@ export class NavIndex {
     return this.regionGraphs;
   }
 
+  // Per-page climb hints: wiki node gid → a marcopolo clarification for a HIDDEN
+  // exit (e.g. wiki "14 Lawinengefahr"'s unclear `'` move is a "kletter runter").
+  // Derived from the merged graph: a wiki node bound to marcopolo whose marcopolo
+  // out-edges are climbs. Used to ANNOTATE (never re-route) the primary wiki route.
+  private climbHints?: Map<string, Map<string, string>>;
+  private async ensureClimbHints(): Promise<Map<string, Map<string, string>>> {
+    if (this.climbHints) return this.climbHints;
+    const result = new Map<string, Map<string, string>>();
+    for (const g of await this.ensureRegionGraphs()) {
+      const byId = new Map(g.nodes.map((n) => [n.id, n]));
+      const out = new Map<string, typeof g.edges>();
+      for (const e of g.edges) { const a = out.get(e.from); if (a) a.push(e); else out.set(e.from, [e]); }
+      for (const n of g.nodes) {
+        if (!n.id.startsWith("wiki:") || !n.sources.some((s) => s.origin === "marcopolo")) continue;
+        const climbs = (out.get(n.id) ?? []).filter((e) => e.origin === "marcopolo" && (e.command === "hoch" || e.command === "runter" || /klett/i.test(e.hint ?? "")));
+        if (!climbs.length) continue;
+        const m = /^wiki:(.+?)#(.+)$/.exec(n.id);
+        if (!m) continue;
+        const [, page, gid] = m;
+        const downE = climbs.filter((e) => e.command === "runter" || /runter|hinab/i.test(e.hint ?? ""));
+        const upE = climbs.filter((e) => e.command === "hoch" || /hoch|hinauf/i.test(e.hint ?? ""));
+        const verb = downE.length && !upE.length ? "runter" : upE.length && !downE.length ? "hoch" : "hoch/runter";
+        const relevant = verb === "runter" ? downE : verb === "hoch" ? upE : climbs; // name only the matching-direction targets
+        const dests = [...new Set(relevant.map((e) => byId.get(e.to)?.name).filter(Boolean))].slice(0, 2).join(" / ");
+        const hint = `laut marcopolo-Karte: hier klettert man ${verb}${dests ? ` (Richtung ${dests})` : ""}`;
+        (result.get(page) ?? result.set(page, new Map()).get(page)!).set(gid, hint);
+      }
+    }
+    this.climbHints = result;
+    return result;
+  }
+
   /** LAST-resort routing over the merged region graphs (wiki + marcopolo
    *  fallback edges). Only reached after the authoritative wiki routers fail, so
    *  it can complete a gap-blocked trip but never override a working route. */
@@ -684,7 +716,7 @@ export class NavIndex {
     if (grid) return routeOnGrid(grid, from, to);
     const file = path.join(path.resolve(config.kbDir), `${page}.md`);
     if (!existsSync(file)) return { ok: false, error: "Kartenseite nicht gefunden" };
-    return routeOnPage(await readFile(file, "utf8"), from, to);
+    return routeOnPage(await readFile(file, "utf8"), from, to, (await this.ensureClimbHints()).get(page));
   }
 
   /** Resolve both endpoints to a shared area page and compute the route. */
@@ -704,7 +736,7 @@ export class NavIndex {
     fromQ = usedFrom; toQ = usedTo;
     const file = path.join(path.resolve(config.kbDir), `${page}.md`);
     if (!existsSync(file)) return { ok: false, error: "Kartenseite nicht gefunden" };
-    return routeOnPage(await readFile(file, "utf8"), fromQ, toQ);
+    return routeOnPage(await readFile(file, "utf8"), fromQ, toQ, (await this.ensureClimbHints()).get(page));
   }
 }
 

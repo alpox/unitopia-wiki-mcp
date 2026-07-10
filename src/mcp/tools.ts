@@ -166,10 +166,14 @@ export async function route(
       const hint = s.hint ? ` (${s.hint})` : "";
       if (s.transition) return `[${s.transition}]${tag}`;
       if (!s.hidden) return `${s.dir}${hint}${tag}`;
-      if (s.hint) return `??? ${s.hint}${tag} – Befehl unklar, tüfteln`;
+      // A HIDDEN move: a '/dotted path carries NO direction — its compass label is
+      // pure geometry and misleading — so never show it. Only a ˄/˅ move conveys a
+      // real hoch/runter. Prefer the marcopolo clarification when present.
+      const vertical = s.dir === "hoch" || s.dir === "runter";
+      if (s.hint) return vertical ? `${s.dir} – ${s.hint}${tag}` : `${s.hint}${tag}`;
       if (s.dir === "hoch") return "hoch (Befehl unklar – evtl. »klettere hoch«, tüfteln)";
       if (s.dir === "runter") return "runter (Befehl unklar – tüfteln)";
-      return "??? (unbekannte Richtung – suchen/tüfteln)";
+      return "??? (unklarer Weg – Richtung nicht ablesbar, tüfteln)";
     });
     return {
       ok: true,
