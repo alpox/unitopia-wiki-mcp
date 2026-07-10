@@ -17,7 +17,12 @@ const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"
 // Knossos' Druidengilde sub-map mixes both). Allowed as grid decoration so a
 // row like "   ^|        ˄" or "   |   .|˄   v" doesn't fail the class test and
 // split the map, orphaning its top half from the legend below.
-const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+0-9A-Z˄˅^v<>▼◄►▲${BOX}]`);
+// `:` is map decoration on some maps (e.g. drachenberge's Klosterberg, a stray
+// ":" mid-map). It carries no direction, but it must be an allowed grid char or
+// the row fails the class test and SPLITS the map — orphaning a whole fragment
+// (and severing the ˄/˅ climbs across it) from the rest and from the legend.
+// Lowercase letters still keep real legend/prose lines out of `isMapLine`.
+const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+:0-9A-Z˄˅^v<>▼◄►▲${BOX}]`);
 // A map row must contain at least one connector glyph (otherwise a row of pure
 // labels/spaces would be mistaken for map art). Box-drawing chars count too:
 // maps drawn with │─┌┼ often have corner-only rows ("┌┼┐", "┌┘ ' ˄") that carry
