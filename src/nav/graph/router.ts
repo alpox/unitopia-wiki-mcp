@@ -5,16 +5,26 @@
  * cheap (preferred); marcopolo fallback edges cost more but connect gaps. See
  * [[marcopolo-secondary-maps]].
  */
-import { deumlaut, type RouteResult, type RouteStep } from "../mapGraph.js";
+import { deumlaut, roomTokens, type RouteResult, type RouteStep } from "../mapGraph.js";
 import type { NavEdge, NavNode, UnifiedGraph } from "./types.js";
 
 const base = (s: string) => deumlaut(s).replace(/\s*\(.*$/, "").trim();
 
 /**
- * Resolve a room query to a node id. Deliberately STRICT (this router is only a
- * last-resort fallback, so it must never invent a match for a room that does not
- * exist): exact base-name, else a whole-word substring of length ≥ 4 in either
- * direction. No token-fragment overlap. Wiki-sourced nodes win ties.
+ * Resolve a room query to a node id. Deliberately STRICT — this router is a
+ * last-resort fallback that scans EVERY region graph, so a loose match here
+ * fabricates a confident route between unrelated places (e.g. "Moaki-Bucht" →
+ * "Bucht (Kurstafel)" in Gallien, "Tempel der BlueOrb" → a random "Tempel").
+ *
+ * Matching is TOKEN-based, not substring: an exact base-name wins, else EVERY
+ * significant token of the query must appear as a token of the candidate room's
+ * name (whole-token equality, or the room token being a MORE specific form of the
+ * query token — "Tempel" query ⊂ "Tempelberg" room). Requiring *all* query tokens
+ * is what stops a generic single word ("Bucht", "Tempel", "Felsen") from standing
+ * in for a multi-word proper noun — the extra token ("moaki", "blueorb", "laksos")
+ * has no home in the generic room, so it is rejected rather than routed. The match
+ * never runs the other way (a garbage query token swallowing a short real token),
+ * which would resurrect fabrication for nonsense queries. Wiki nodes win ties.
  */
 function resolveNode(g: UnifiedGraph, q: string): NavNode | null {
   const nq = base(q);
@@ -25,11 +35,13 @@ function resolveNode(g: UnifiedGraph, q: string): NavNode | null {
 
   const exact = named.filter((n) => base(n.name!) === nq);
   if (exact.length) return pick(exact);
-  const sub = named.filter((n) => {
-    const bn = base(n.name!);
-    return nq.length >= 4 && bn.includes(nq) || (bn.length >= 4 && nq.includes(bn));
+  const qTok = roomTokens(q);
+  if (!qTok.length) return null;
+  const tok = named.filter((n) => {
+    const rt = roomTokens(n.name!);
+    return qTok.every((qt) => rt.some((x) => x === qt || x.includes(qt)));
   });
-  return sub.length ? pick(sub) : null;
+  return tok.length ? pick(tok) : null;
 }
 
 /**

@@ -29,8 +29,52 @@ const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+:0-9A-Z˄˅^v<>▼◄►▲${BOX}]`)
 // no ASCII wire char — excluding them here fragments such maps (e.g. Burg
 // Tregyln), scattering node markers away from their legend so rooms don't resolve.
 const WIRECH = new RegExp(`[o~|/\\\\\\-${BOX}]`);
-const isMapLine = (l: string) =>
-  l.length > 4 && WIRECH.test(l) && !/\|\s*:?-{2,}:?\s*\|/.test(l) && [...l].every((c) => CLS.test(c));
+
+/** Letters a map's OWN legend declares as terrain glyphs. Uppercase letters are
+ *  node labels (handled elsewhere); lowercase ones are CONNECTORS the map draws
+ *  as letters instead of wires — a walkable `path` (Pfad/Weg/Straße…) or `water`
+ *  you can't walk (Fluss/Bach…). Learned per-page from the Zeichenerklärung so
+ *  ANY letter a given map uses is covered — not a hardcoded list — while prose
+ *  and legend text (whose letters aren't in this small per-page set) stay
+ *  screened out of the graph by the char-class test. `o`/`~`/`v` are skipped:
+ *  they are already node/portal glyphs, never connectors. */
+export interface ConnGlyphs { path: Set<string>; water: Set<string>; node: Set<string>; }
+const EMPTY_CONN: ConnGlyphs = { path: new Set(), water: new Set(), node: new Set() };
+// Arrow glyphs a map draws in its art that ALSO appear as a standalone legend
+// label pointing at a sub-map (e.g. drachenberge's overview "^" → the six
+// mountains: `^ [Klosterberg](#Klosterberg)`). Such a "^" is not a climb glyph —
+// it is a GATEWAY room. We promote it to a node ONLY on pages whose legend
+// defines it that way (the IFF), and only for ASCII "^" / caret-like arrows, so
+// the unicode climb glyphs ˄/˅ used inside detail maps are never disturbed. */
+const LABEL_ARROWS = new Set(["^"]);
+// A legend letter is a connector only when its definition names a TERRAIN TYPE,
+// not a place. This keeps the mechanism general over LETTERS (any letter a map
+// assigns to "Pfad"/"Fluss"/… is covered) while the small, stable vocabulary of
+// terrain words keeps ordinary node legends ("s Stadttor") and prose from being
+// misread as walkable wires — the vocabulary is the generalization axis, not a
+// hardcoded letter list. Water is kept separate so we never route along a river.
+const PATHWORD = /^(pfad|weg|strasse|gasse|route|steig|steg|treppe|bruecke|furt|damm|pass|allee|promenade|trampelpfad|saumpfad|wanderweg)/;
+const WATERWORD = /^(fluss|bach|strom|kanal|graben|see|teich|sumpf|moor|watt|priel|meer|ufer|flut)/;
+export function connectorGlyphs(md: string): ConnGlyphs {
+  const path = new Set<string>(), water = new Set<string>(), node = new Set<string>();
+  for (const ln of md.split("\n")) {
+    const m = /^ {0,2}([a-z])\s+([A-Za-zÄÖÜäöü].*)$/.exec(ln);
+    if (m && m[1] !== "o" && m[1] !== "v") {
+      const w = deumlaut(m[2]);
+      if (WATERWORD.test(w)) water.add(m[1]);
+      else if (PATHWORD.test(w)) path.add(m[1]);
+    }
+    // A standalone arrow legend label that links into a sub-map → a gateway node.
+    const am = /^\s*(\S)\s+\[[^\]]+\]\(#/.exec(ln);
+    if (am && LABEL_ARROWS.has(am[1])) node.add(am[1]);
+  }
+  return { path, water, node };
+}
+const isMapLine = (l: string, conn: ConnGlyphs = EMPTY_CONN) =>
+  l.length > 4 &&
+  (WIRECH.test(l) || [...l].some((c) => conn.path.has(c))) &&
+  !/\|\s*:?-{2,}:?\s*\|/.test(l) &&
+  [...l].every((c) => CLS.test(c) || conn.path.has(c) || conn.water.has(c));
 // A short (≤4-char) wire row that joins TWO nodes with a connector — e.g. "5--4"
 // (the Drachenhort/Spalt end of the Drachenkopf map) or "T--1". `isMapLine`'s
 // length gate drops these, so they're only accepted as a CONTINUATION of an
@@ -74,13 +118,19 @@ export interface RouteResult {
 const OFF: Record<string, [number, number]> = { E: [0, 1], W: [0, -1], N: [-1, 0], S: [1, 0], NE: [-1, 1], SW: [1, -1], NW: [-1, -1], SE: [1, 1] };
 const COMPASS: Record<string, string> = { E: "osten", W: "westen", N: "norden", S: "sueden", NE: "nordosten", SW: "suedwesten", NW: "nordwesten", SE: "suedosten" };
 const OPP: Record<string, string> = { E: "W", W: "E", N: "S", S: "N", NE: "SW", SW: "NE", NW: "SE", SE: "NW" };
+// Compass ring in clockwise order — lets the tracer step a heading ±45° when a
+// diagonal wire (esp. a column-shifting climb) drifts off pure vertical.
+const RING = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const turn = (d: string, k: number): string => RING[(RING.indexOf(d) + k + 8) % 8];
 const FLEX = ".'˄˅^v";
 // Vertical (z-axis) portal glyphs: ˄ Hoch, ˅ Runter (with ASCII ^/v synonyms).
 // A wire that runs through one is a climb/descent, not a compass move — labelled
 // by travel direction.
 const VERT = "˄˅^v";
-const zLabel = (startDir: string, vert: boolean): string =>
-  vert ? (startDir === "N" ? "hoch" : startDir === "S" ? "runter" : COMPASS[startDir]) : COMPASS[startDir];
+// The up/down sense of a climb glyph: ˄/^ = hoch (+1), ˅/v = runter (-1). Used to
+// label a climb move whose net row travel is zero (a horizontal ridge crossing,
+// e.g. "o ˄ ˅ o") by the glyph the walk actually climbed onto, not by geometry.
+const climbSign = (ch: string): number => (ch === "˄" || ch === "^" ? 1 : ch === "˅" || ch === "v" ? -1 : 0);
 const wireDirs = (ch: string): string[] =>
   ch === "-" || ch === "─" || ch === "═" ? ["E", "W"]
   : ch === "|" || ch === "│" || ch === "║" ? ["N", "S"]
@@ -92,24 +142,24 @@ const wireDirs = (ch: string): string[] =>
   : FLEX.includes(ch) ? Object.keys(OFF)
   : [];
 
-function splitGroups(md: string): MapGroup[] {
+function splitGroups(md: string, conn: ConnGlyphs = connectorGlyphs(md)): MapGroup[] {
   const lines = md.split("\n");
   const groups: MapGroup[] = [];
   let curHeading = "";
   let i = 0;
   while (i < lines.length) {
     const h = /^#{1,6}\s+\[?([^\]\n]+?)\]?(\(#?[^)]*\))?\s*$/.exec(lines[i]);
-    if (h && !isMapLine(lines[i])) curHeading = anchorOf(h[1].replace(/\]\(.*$/, ""));
-    if (isMapLine(lines[i])) {
+    if (h && !isMapLine(lines[i], conn)) curHeading = anchorOf(h[1].replace(/\]\(.*$/, ""));
+    if (isMapLine(lines[i], conn)) {
       let start = i;
       // Pull in leading label-only rows that head the wires directly below them
       // (e.g. the "1     2" gate row atop Foo-Ling-Yoo's Stadtplan) — they carry
       // real node labels but no wire char, so isMapLine skips them otherwise.
       while (start > 0 && isLabelRow(lines[start - 1])) start--;
-      while (i < lines.length && (isMapLine(lines[i]) || lines[i].trim() === "" ||
-        (isLabelRow(lines[i]) && i > start && lines[i - 1].trim() !== "" && (isMapLine(lines[i - 1]) || isLabelRow(lines[i - 1]))) ||
+      while (i < lines.length && (isMapLine(lines[i], conn) || lines[i].trim() === "" ||
+        (isLabelRow(lines[i]) && i > start && lines[i - 1].trim() !== "" && (isMapLine(lines[i - 1], conn) || isLabelRow(lines[i - 1]))) ||
         // A short "5--4"-style node-join row directly under existing map art.
-        (isNodeJoinRow(lines[i]) && i > start && isMapLine(lines[i - 1])))) i++;
+        (isNodeJoinRow(lines[i]) && i > start && isMapLine(lines[i - 1], conn)))) i++;
       let end = i; while (end > start && lines[end - 1].trim() === "") end--;
       const mapLines = lines.slice(start, end);
       const labelName = new Map<string, string>(), labelAnchor = new Map<string, string[]>();
@@ -126,10 +176,10 @@ function splitGroups(md: string): MapGroup[] {
         if (arr.length) labelAnchor.set(key, arr);
       };
       let j = i, miss = 0, last: string | null = null;
-      while (j < lines.length && miss < 4 && !isMapLine(lines[j])) {
+      while (j < lines.length && miss < 4 && !isMapLine(lines[j], conn)) {
         const ln = lines[j];
         if (ln.trim() === "") { j++; continue; } // blank: neutral, keep legend context
-        const m = /^\s*([0-9]{1,3}|[A-Z]{1,2}[0-9]?|~)\s+(\S.*)$/.exec(ln);
+        const m = /^\s*([0-9]{1,3}|[A-Z]{1,2}[0-9]?|~|\^)\s+(\S.*)$/.exec(ln);
         if (m) {
           if (!labelName.has(m[1])) labelName.set(m[1], cleanName(m[2]));
           addAnchors(m[1], m[2]);
@@ -148,23 +198,32 @@ function splitGroups(md: string): MapGroup[] {
 
 interface PageGraph { nodes: Map<string, GNode>; adj: Map<string, RouteStep[] & { to: string }[] | any>; grids: string[][][]; }
 
-function buildGraph(groups: MapGroup[]) {
+function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
   const nodes = new Map<string, GNode>();
   const adj = new Map<string, { to: string; dir: string | null; hidden: boolean; transition: string | null }[]>();
   const groupNodes: string[][] = [];
   const grids: string[][][] = [];
+  // Normalize legend-defined connector letters to glyphs the tracer already
+  // understands: a walkable `path` letter becomes a "." (a "path exists, command
+  // from geometry / unclear" run — exactly the legend's own meaning), and a
+  // `water` letter becomes blank (present so its line survived the class test,
+  // but not a walkable edge — never invent a river you can stroll along).
+  const remap = (l: string) =>
+    conn.path.size || conn.water.size
+      ? [...l].map((c) => (conn.path.has(c) ? "." : conn.water.has(c) ? " " : c)).join("")
+      : l;
 
   groups.forEach((g, gi) => {
     const W = Math.max(...g.mapLines.map((l) => l.length));
-    const grid = g.mapLines.map((l) => l.padEnd(W, " ").split(""));
+    const grid = g.mapLines.map((l) => remap(l).padEnd(W, " ").split(""));
     grids[gi] = grid;
     const Hh = grid.length;
     const at = (r: number, c: number) => (r >= 0 && r < Hh && c >= 0 && c < W ? grid[r][c] : " ");
-    const isNode = (ch: string) => ch === "o" || ch === "~" || /[A-Z]/.test(ch);
+    const isNode = (ch: string) => ch === "o" || ch === "~" || /[A-Z]/.test(ch) || conn.node.has(ch);
     const gid = (r: number, c: number) => `${gi}:${r},${c}`;
     const local: string[] = []; groupNodes[gi] = local;
     for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) if (isNode(at(r, c))) {
-      let lbl = /[A-Z]/.test(at(r, c)) ? at(r, c) : null;
+      let lbl = /[A-Z]/.test(at(r, c)) ? at(r, c) : conn.node.has(at(r, c)) ? at(r, c) : null;
       let cEnd = c;
       // "K3" — an uppercase letter glued to digits — is ONE multi-char legend
       // label (e.g. the four Kartukultininurta-Platz corners K1..K4), not a
@@ -201,6 +260,26 @@ function buildGraph(groups: MapGroup[]) {
         }
         else { const id = gid(r, c); nodes.set(id, { gid: id, gi, r, c, cEnd: c2, label: num, name: g.labelName.get(num) ?? null, anchors: g.labelAnchor.get(num) }); adj.set(id, []); local.push(id); }
       }
+    // Climb wires are often drawn with the ˄/˅ markers SPACED OUT (e.g. the row
+    // "N--o ˄ ˅ o"): the up/down glyphs sit a blank apart, yet the two rooms they
+    // string together ARE connected. Bridge such single-blank gaps by filling a
+    // blank that lies on a straight axis (H, V, or a diagonal) between two climb
+    // markers — or between a climb marker and a node — reconstructing the intended
+    // climb wire so the tracer can follow it. A real ˄/˅ must sit on one side, so
+    // ordinary gaps between rooms are never fused.
+    const isClimb = (ch: string) => VERT.includes(ch);
+    const nodeCell = (r: number, c: number) => isNode(at(r, c)) || /[0-9]/.test(at(r, c));
+    const AX: [number, number][] = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    const fills: [number, number][] = [];
+    for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) {
+      if (at(r, c) !== " ") continue;
+      for (const [dr, dc] of AX) {
+        const aC = isClimb(at(r - dr, c - dc)), bC = isClimb(at(r + dr, c + dc));
+        if ((aC && (bC || nodeCell(r + dr, c + dc))) || (bC && nodeCell(r - dr, c - dc))) { fills.push([r, c]); break; }
+      }
+    }
+    const filled = new Set<string>();
+    for (const [r, c] of fills) { grid[r][c] = "˄"; filled.add(`${r},${c}`); }
     // Map a cell to a node, treating a multi-char label as occupying its whole
     // column span [c, cEnd] so wires adjacent to any part of the label connect.
     const nodeAt = (r: number, c: number) => {
@@ -226,9 +305,26 @@ function buildGraph(groups: MapGroup[]) {
     // a vertical portal if it or an orthogonal neighbour is a ˄/˅. (Only N/S
     // moves become hoch/runter — see zLabel — so a stray arrow near a horizontal
     // wire is harmless.)
+    // Only ORIGINAL ˄/˅ glyphs count as "beside a climb" — a gap-fill glyph (added
+    // to bridge a spaced-out climb wire) must not bleed vert-ness onto an adjacent
+    // ground diagonal (which would mislabel a plain suedwesten walk as "runter").
+    const rv = (r: number, c: number) => VERT.includes(at(r, c)) && !filled.has(`${r},${c}`);
     const nearVert = (r: number, c: number) =>
-      VERT.includes(at(r, c)) || VERT.includes(at(r, c - 1)) || VERT.includes(at(r, c + 1)) ||
-      VERT.includes(at(r - 1, c)) || VERT.includes(at(r + 1, c));
+      rv(r, c) || rv(r, c - 1) || rv(r, c + 1) || rv(r - 1, c) || rv(r + 1, c);
+    const walkableCell = (r: number, c: number) => { const ch = at(r, c); return isNode(ch) || /[0-9]/.test(ch) || wireDirs(ch).length > 0; };
+    // A ˄/˅ climb is followed as a SINGLE path with angular preference: keep the
+    // arrival heading, and only when that is blocked take the least turn (±45°, then
+    // ±90°). This lands the walk on the ladder's rooms (no gutter-snaking spurious
+    // edges) and refuses to fan onto a crossing ' line, yet still lets a climb marker
+    // that sits on a BEND — e.g. the "˅--+---" where a climb meets the horizontal
+    // Klosterberg way — turn from its SE arrival onto the way instead of dead-ending.
+    const climbStep = (r: number, c: number, adir: string, seen: Set<string>): string[] => {
+      for (const d of [adir, turn(adir, 1), turn(adir, -1), turn(adir, 2), turn(adir, -2)]) {
+        const nr = r + OFF[d][0], nc = c + OFF[d][1];
+        if (!seen.has(`${nr},${nc}`) && walkableCell(nr, nc)) return [d];
+      }
+      return [];
+    };
     // A wiki '+'/'┼'/'╬' is drawn as an all-directions junction, but where two
     // DIFFERENT features cross — a Bach (water) flowing across a Weg — it is a
     // *crossover*, not a junction: the lines pass over/under one another and do
@@ -251,6 +347,12 @@ function buildGraph(groups: MapGroup[]) {
       return null;
     };
     const isWater = (n: GNode | null) => !!n?.name && WATER_RE.test(n.name);
+    // A '+' whose perpendicular axis is a "'" quote-run (a "keine erkennbare
+    // Himmelsrichtung" climb/unknown path) crossing a plain wire is ALSO a
+    // crossover, not a junction: the quote-path passes over the way without
+    // joining it (e.g. drachenberge's "˅--+---" where a climb-path's ' quotes
+    // cross the horizontal Klosterberg way). Without this the '+' fans onto the
+    // quotes and welds the way to the climb-path, fragmenting/mis-wiring the map.
     const crossover = new Set<string>();
     for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) {
       if (!CROSS.includes(at(r, c))) continue;
@@ -289,10 +391,13 @@ function buildGraph(groups: MapGroup[]) {
         if (isNode(fch) || /[0-9]/.test(fch)) { if (!underCrossed(fr, fc, startDir)) { const t = nodeAt(fr, fc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: COMPASS[startDir], hidden: false }); } continue; }
         if (wireDirs(fch).length === 0) continue;
         const seen = new Set([`${fr},${fc}`]);
-        // 5th flag: the wire has crossed a ˄/˅ portal → this is a hoch/runter move.
-        const q: [number, number, boolean, boolean, boolean, string][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || nearVert(fr, fc), nearVert(fr, fc), startDir]];
+        // Frontier flags: hasApos (crossed a "'" → command unknown), hasDir (has a
+        // definite compass dir), vert (near/on a ˄/˅ portal → hoch/runter), adir
+        // (arrival direction), and csign (the up/down sense of the FIRST real climb
+        // glyph stepped onto — labels a net-horizontal climb; 0 until one is met).
+        const q: [number, number, boolean, boolean, boolean, string, number][] = [[fr, fc, fch === "'", !FLEX.includes(fch) || nearVert(fr, fc), nearVert(fr, fc), startDir, filled.has(`${fr},${fc}`) ? 0 : climbSign(fch)]];
         while (q.length) {
-          const [r, c, hasApos, hasDir, vert, adir] = q.shift()!;
+          const [r, c, hasApos, hasDir, vert, adir, csign] = q.shift()!;
           // Two kinds of cell are traversed STRAIGHT (only the arrival direction),
           // never fanned out:
           //  - a flagged crossover '+': the Weg passes over the Bach without them
@@ -303,16 +408,30 @@ function buildGraph(groups: MapGroup[]) {
           //    shortcut, or a collapsed 14→Bach, both cutting straight through the
           //    dot mesh) — a real descent is `14 ·→ Felsterasse ·→ Bach`, two steps.
           const cch = at(r, c);
-          const cellDirs = crossover.has(`${r},${c}`) || DOTS.includes(cch)
-            ? wireDirs(cch).filter((d) => d === adir)
-            : wireDirs(cch);
+          // Per-glyph continuation rule (replaces the blanket all-8 fan that welded
+          // crossing lines). Three glyph kinds are traversed STRAIGHT — the arrival
+          // direction only, never fanned:
+          //  - a flagged crossover '+': the Weg passes over the Bach without joining;
+          //  - a '/. dotted cell: a dot run is a LINEAR "command unknown" path;
+          //  - a ˄/˅ CLIMB cell: a climb wire is a straight run (vertical, a pure
+          //    diagonal, or — once its spaced markers are gap-filled — horizontal).
+          //    Going straight lands the walk ON the ladder's rooms instead of
+          //    snaking up the gutter beside them (which used to mint spurious
+          //    room-skipping climb edges), and never fans onto a crossing ' line.
+          // Everything else (straight wires, drawn junctions) keeps its own wireDirs,
+          // so a real junction still fans out — correct at a genuine branch.
+          const cellDirs = VERT.includes(cch)
+            ? climbStep(r, c, adir, seen)
+            : crossover.has(`${r},${c}`) || DOTS.includes(cch)
+              ? wireDirs(cch).filter((d) => d === adir)
+              : wireDirs(cch);
           for (const wd of cellDirs) {
             const [dr, dc] = OFF[wd], nr = r + dr, nc = c + dc, nch = at(nr, nc);
             if (isNode(nch) || /[0-9]/.test(nch)) {
               if (underCrossed(nr, nc, wd)) {
                 // pass under this node, continue straight in the same direction
                 const ar = nr + dr, ac = nc + dc, akey = `${ar},${ac}`;
-                if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir, vert, wd]); }
+                if (!seen.has(akey) && wireDirs(at(ar, ac)).length) { seen.add(akey); q.push([ar, ac, hasApos, hasDir, vert, wd, csign]); }
                 continue;
               }
               // A "'"/dot on the path makes the step's COMMAND unknown (the legend:
@@ -320,12 +439,28 @@ function buildGraph(groups: MapGroup[]) {
               // room lies higher/lower — a useful hint (dir = hoch/runter) — but does
               // NOT clear `hidden`: you still can't just "hoch", you have to tüfteln
               // (a "klettere hoch"-type move). So keep hidden when hasApos/!hasDir.
-              const t = nodeAt(nr, nc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: zLabel(startDir, vert), hidden: hasApos || !hasDir }); continue;
+              // Labelling a move on arrival at node t:
+              //  - if the walk stepped on a real climb glyph (csign≠0): it is a climb.
+              //    hoch/runter by NET ROW travel; a horizontal ridge (same row) reads
+              //    the glyph's own sense (˄→hoch, ˅→runter) — a climb wire never reads
+              //    as a compass move.
+              //  - else if it merely ran BESIDE a ˄/˅ (vert) on a real vertical wire:
+              //    hoch/runter by row travel, else compass (a stray arrow by a
+              //    horizontal wire stays a compass move).
+              //  - else: plain compass.
+              const t = nodeAt(nr, nc);
+              if (t && t.gid !== id && !found.has(t.gid)) {
+                const dir = csign !== 0
+                  ? (t.r < n.r ? "hoch" : t.r > n.r ? "runter" : csign > 0 ? "hoch" : "runter")
+                  : vert && t.r !== n.r ? (t.r < n.r ? "hoch" : "runter") : COMPASS[startDir];
+                found.set(t.gid, { dir, hidden: hasApos || !hasDir });
+              }
+              continue;
             }
             const key = `${nr},${nc}`; if (seen.has(key)) continue;
             const nd = wireDirs(nch); if (nd.length === 0) continue;
             if (!FLEX.includes(nch) && !FLEX.includes(at(r, c)) && !nd.includes(OPP[wd])) continue;
-            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || nearVert(nr, nc), vert || nearVert(nr, nc), wd]);
+            seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || nearVert(nr, nc), vert || nearVert(nr, nc), wd, csign !== 0 ? csign : filled.has(key) ? 0 : climbSign(nch)]);
           }
         }
         for (const [to, e] of found) if (!adj.get(id)!.some((x) => x.to === to)) adj.get(id)!.push({ to, dir: e.dir, hidden: e.hidden, transition: null });
@@ -346,10 +481,21 @@ function buildGraph(groups: MapGroup[]) {
   // river into a portal hub that shortcuts the whole map — so skip those.
   const anchorUse = new Map<string, number>();
   for (const n of nodes.values()) for (const a of n.anchors ?? []) anchorUse.set(`${n.gi}:${a}`, (anchorUse.get(`${n.gi}:${a}`) ?? 0) + 1);
+  // A legend #anchor often names the sub-map loosely: "#Klosterberg" targets the
+  // heading "Klosterberg (Luntayberg)". Resolve to a group by exact anchor, then
+  // deumlauted equality, then a separator-insensitive prefix (≥4 chars, so a
+  // gateway "^ [Klosterberg](#Klosterberg)" still reaches its detail sub-map).
+  const normA = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, "");
+  const anchorGroup = (anchor: string): number => {
+    let gi = groups.findIndex((g) => g.anchor === anchor);
+    if (gi < 0) gi = groups.findIndex((g) => g.anchor && deumlaut(g.anchor) === deumlaut(anchor));
+    if (gi < 0) { const na = normA(anchor); if (na.length >= 4) gi = groups.findIndex((g) => g.anchor && normA(g.anchor).startsWith(na)); }
+    return gi;
+  };
   for (const n of [...nodes.values()]) {
     for (const anchor of n.anchors ?? []) {
       if ((anchorUse.get(`${n.gi}:${anchor}`) ?? 0) > 3) continue; // terrain, not a gateway
-      const tg = groups.findIndex((g) => g.anchor === anchor);
+      const tg = anchorGroup(anchor);
       if (tg < 0 || tg === n.gi) continue;
       for (const entry of entries(tg, groups[n.gi].anchor)) {
         if (!entry || entry === n.gid) continue;
@@ -400,7 +546,7 @@ export function tokenOverlap(queryTokens: string[], name: string): boolean {
   return queryTokens.some((q) => r.some((x) => x.includes(q) || q.includes(x)));
 }
 
-function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>, q: string, groupAnchors: string[] = []): GNode | null {
+function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>, q: string, groupAnchors: string[] = [], preferGi = -1): GNode | null {
   const ql = deumlaut(q);
   // The sub-map (group) whose heading equals an anchor, i.e. its area name.
   const groupGi = (anchor: string) => groupAnchors.findIndex((a) => a && deumlaut(a) === deumlaut(anchor));
@@ -460,7 +606,14 @@ function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>,
     else if (n.name && sep(n.name).includes(nq)) tier = 1;
     if (tier < 0) continue;
     const numbered = n.label && /^\d+$/.test(n.label) ? 1 : 0;
-    const score = tier * 1e6 + numbered * 1e4 + sameLabelNeighbours(n) * 100 + 1 / (1 + n.gi);
+    // Co-location bias: when the caller has already pinned the OTHER endpoint to a
+    // sub-map, prefer a same-name candidate on that map. Weighted below the name
+    // tier / numbered-primary signals (so it only breaks what the `1/(1+gi)` group
+    // order would otherwise decide) — this is what lets drachenberge's "Steg der
+    // Moaki-Bucht" resolve to the Klosterberg sub-map that also holds the Tempel,
+    // instead of the identically-named Steg on the overview Karte.
+    const colocated = preferGi >= 0 && n.gi === preferGi ? 1 : 0;
+    const score = tier * 1e6 + numbered * 1e4 + colocated * 1e3 + sameLabelNeighbours(n) * 100 + 1 / (1 + n.gi);
     if (score > bestScore) { bestScore = score; best = n; }
   }
   return best ? resolve(best) : null;
@@ -544,12 +697,26 @@ function asciiPath(grids: string[][][], nodes: Map<string, GNode>, pathGids: str
  *  e.g. wiki "14 Lawinengefahr"'s unclear `'`/dot exit is really a "kletter
  *  runter". Annotation only: it never changes the path. See [[marcopolo-secondary-maps]]. */
 export function routeOnPage(md: string, fromQ: string, toQ: string, climbHints?: Map<string, string>): RouteResult {
-  const groups = splitGroups(md);
+  const conn = connectorGlyphs(md);
+  const groups = splitGroups(md, conn);
   if (!groups.length) return { ok: false, error: "keine Karte auf dieser Seite" };
-  const { nodes, adj, grids } = buildGraph(groups);
+  const { nodes, adj, grids } = buildGraph(groups, conn);
   const anchors = groups.map((g) => g.anchor);
-  const s = findNode(nodes, adj, fromQ, anchors), t = findNode(nodes, adj, toQ, anchors);
+  let s = findNode(nodes, adj, fromQ, anchors), t = findNode(nodes, adj, toQ, anchors);
   if (!s || !t) return { ok: false, error: `Raum nicht auf der Karte gefunden: ${!s ? fromQ : toQ}` };
+  // Endpoint co-location: a room name can recur across sub-maps of one page (e.g.
+  // "Steg der Moaki-Bucht" on both the drachenberge overview and the Klosterberg
+  // detail). When the two endpoints land on different sub-maps, re-resolve each
+  // biased toward the OTHER's sub-map and keep a co-located pairing if one exists —
+  // so an intra-map route isn't split across the wrong same-named tiles. Only
+  // moves an endpoint when an equally-good same-name candidate sits on the other's
+  // map, so genuinely cross-sub-map routes (bridged by anchors) are untouched.
+  if (s.gi !== t.gi) {
+    const s2 = findNode(nodes, adj, fromQ, anchors, t.gi);
+    const t2 = findNode(nodes, adj, toQ, anchors, s.gi);
+    if (s2 && s2.gi === t.gi) s = s2;
+    else if (t2 && t2.gi === s.gi) t = t2;
+  }
   // Dijkstra: a sub-map transition is a real (≈1) move but slightly penalized
   // so that when a comparable in-map path exists it wins — without forcing a
   // long detour to avoid a crossing that is genuinely the shortest way.
@@ -584,9 +751,10 @@ export function routeOnPage(md: string, fromQ: string, toQ: string, climbHints?:
  * junction `o` nodes are kept (routing needs them) but carry a null name.
  */
 export function pageGraphIR(md: string, pageSlug: string, region: string): { nodes: NavNode[]; edges: NavEdge[] } {
-  const groups = splitGroups(md);
+  const conn = connectorGlyphs(md);
+  const groups = splitGroups(md, conn);
   if (!groups.length) return { nodes: [], edges: [] };
-  const { nodes, adj } = buildGraph(groups);
+  const { nodes, adj } = buildGraph(groups, conn);
   const idOf = (gid: string) => `wiki:${pageSlug}#${gid}`;
   const norm = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, "");
   // A room's gateway targets: its legend #sub-map anchors PLUS the KB pages its
@@ -761,9 +929,10 @@ export interface PageDiagnostics {
  *  routing. Used by the offline audit to rank "most suspicious" maps so the
  *  crossing-heuristic's real failure rate can be measured, not guessed. */
 export function diagnosePage(md: string): PageDiagnostics | null {
-  const groups = splitGroups(md);
+  const conn = connectorGlyphs(md);
+  const groups = splitGroups(md, conn);
   if (!groups.length) return null;
-  const { nodes, adj } = buildGraph(groups);
+  const { nodes, adj } = buildGraph(groups, conn);
   const ids = [...nodes.keys()];
 
   // Undirected edge set + degree per node.

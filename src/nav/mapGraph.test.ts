@@ -68,6 +68,24 @@ test("tadmor: the river bridges (Holzsteg/Neue Brücke) are dot-crossed, not fus
 });
 
 // ---------------------------------------------------------------------------
+// Drachenberge Klosterberg (the corpus' hardest map): diagonal + spaced-out ˄/˅
+// climb ladders, ' quote-lines, a "˅--+---" crossover and |\/| weave textures.
+// The S→T route must be a single CLEAN climb corridor with no hidden ("hickup")
+// steps. Every step is verified against the map legend. Note pos.13 is
+// "suedwesten": node 5 (Drachentreppe) → T runs down the "/" diagonal (down AND
+// left); T connects to nothing else, so the final approach is geometrically SW.
+// ---------------------------------------------------------------------------
+test("drachenberge: Steg der Moaki-Bucht -> Tempel der 'BlueOrb' is a clean climb", () => {
+  const r = routeOnPage(read("drachenberge"), "Steg der Moaki-Bucht", "Tempel der 'BlueOrb'");
+  assert.ok(r.ok, r.error);
+  assert.equal(
+    r.steps!.map((s) => s.dir).join(", "),
+    "osten, suedosten, suedwesten, hoch, hoch, hoch, hoch, hoch, osten, hoch, hoch, hoch, suedwesten",
+  );
+  assert.ok(r.steps!.every((s) => !s.hidden), "no hidden/unreadable steps — a clean corridor");
+});
+
+// ---------------------------------------------------------------------------
 // Corpus invariants: nothing the parser accepts should throw, and the known
 // map pages must keep producing graphs (guards against a fix that regresses
 // segmentation and drops maps).
