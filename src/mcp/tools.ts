@@ -164,8 +164,11 @@ export async function route(
       // move comes from the older secondary maps, and carry a traversal hint.
       const tag = s.source === "marcopolo" ? " «lt. marcopolo-Karte»" : "";
       const hint = s.hint ? ` (${s.hint})` : "";
-      if (s.transition) return `[${s.transition}]${tag}`;
-      if (!s.hidden) return `${s.dir}${hint}${tag}`;
+      // A bare overlay marker (no direction) shows the seam alone; a real move that
+      // also crosses a seam shows the direction with the crossing noted after it.
+      const seam = s.transition ? ` ⟶ [${s.transition}]` : "";
+      if (s.transition && !s.dir) return `[${s.transition}]${tag}`;
+      if (!s.hidden) return `${s.dir}${hint}${seam}${tag}`;
       // A HIDDEN move: a '/dotted path carries NO direction — its compass label is
       // pure geometry and misleading — so never show it. Only a ˄/˅ move conveys a
       // real hoch/runter. Prefer the marcopolo clarification when present.
@@ -180,7 +183,7 @@ export async function route(
       from: r.from,
       to: r.to,
       steps,
-      command: r.clear ? `tue ${(r.steps ?? []).map((s) => s.dir).join(" ")}` : null,
+      command: r.clear ? `tue ${(r.steps ?? []).filter((s) => s.dir).map((s) => s.dir).join(" ")}` : null,
       ascii: r.ascii,
       text: formatRoute(r),
     };

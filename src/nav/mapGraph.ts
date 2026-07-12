@@ -736,9 +736,25 @@ export function routeOnPage(md: string, fromQ: string, toQ: string, climbHints?:
     }
   }
   if (!prev.has(t.gid)) return { ok: false, error: "kein zusammenhängender Weg in den Karten gefunden" };
-  const steps: RouteStep[] = []; const pathGids = [t.gid]; let cur = t.gid;
-  while (prev.get(cur)) { const { from, e } = prev.get(cur)!; steps.unshift({ dir: e.dir, hidden: e.hidden, transition: e.transition, toName: nodes.get(e.to)?.name ?? null, hint: e.hidden ? climbHints?.get(from) ?? null : null }); pathGids.unshift(from); cur = from; }
-  const clear = steps.every((x) => x.dir && !x.hidden && !x.transition);
+  const raw: RouteStep[] = []; const pathGids = [t.gid]; let cur = t.gid;
+  while (prev.get(cur)) { const { from, e } = prev.get(cur)!; raw.unshift({ dir: e.dir, hidden: e.hidden, transition: e.transition, toName: nodes.get(e.to)?.name ?? null, hint: e.hidden ? climbHints?.get(from) ?? null : null }); pathGids.unshift(from); cur = from; }
+  // A sub-map crossing (`transition`, dir=null) is a map overlay, not a separate
+  // action — fold its note onto the next real walk step (else the previous one) so it
+  // rides on a normal move instead of being a directionless step of its own.
+  const steps: RouteStep[] = []; let pendingSeam: string | null = null;
+  for (const st of raw) {
+    if (!st.dir && st.transition) { pendingSeam = pendingSeam ? `${pendingSeam}; ${st.transition}` : st.transition; continue; }
+    steps.push(pendingSeam && !st.transition ? { ...st, transition: pendingSeam } : st);
+    pendingSeam = null;
+  }
+  if (pendingSeam) {
+    if (steps.length && !steps[steps.length - 1].transition) steps[steps.length - 1] = { ...steps[steps.length - 1], transition: pendingSeam };
+    else steps.push({ dir: null, hidden: false, transition: pendingSeam, toName: null });
+  }
+  // A map-overlay crossing is not a user action, so it no longer disqualifies a
+  // "clear" route: clear = every step is a real move (or a bare overlay marker) and
+  // none is a hidden/unreadable move.
+  const clear = steps.every((x) => !x.hidden && (x.dir || x.transition));
   return { ok: true, from: s.name ?? s.label ?? fromQ, to: t.name ?? t.label ?? toQ, steps, clear, ascii: asciiPath(grids, nodes, pathGids) };
 }
 
@@ -874,23 +890,29 @@ export function formatRoute(r: RouteResult): string {
     if (s.dir === "runter") return "runter (aber Befehl unklar – tüfteln)";
     return "??? unklarer Weg – Richtung nicht ablesbar, hier tüfteln";
   };
+  const seam = (t: string) => t.replace(/^Übergang nach\s+/i, "");
   const lines: string[] = [];
   let i = 0, n = 0;
   while (i < steps.length) {
     const s = steps[i];
-    if (s.transition) {
-      // A map boundary is NOT an action — the player just keeps walking onto the
-      // next map. Show it as an un-numbered context marker, not a counted step.
-      const where = s.transition.replace(/^Übergang nach\s+/i, "");
-      lines.push(`${" ".repeat(w + 1)}↳ (Karte wechselt zu ${where} – einfach weiterlaufen)`);
+    // A pure overlay marker (no direction): you just keep walking onto the next
+    // map — un-numbered context, not a counted action.
+    if (!s.dir) {
+      if (s.transition) lines.push(`${" ".repeat(w + 1)}↳ (Karte wechselt zu ${seam(s.transition)} – einfach weiterlaufen)`);
       i += 1;
       continue;
     }
-    // Collapse a run of steps that render identically (same clean dir, or the
-    // same kind of unknown/vertical hint).
     const label = stepLabel(s);
+    // A real move that ALSO crosses a map seam: a normal counted step with the
+    // crossing noted inline (still just one walk — you don't type anything extra).
+    if (s.transition) {
+      lines.push(`${pad(n + 1)}. ${label}  ⟶ (dabei Karte wechseln zu ${seam(s.transition)}, einfach weiterlaufen)`);
+      n += 1; i += 1;
+      continue;
+    }
+    // Collapse a run of identical, un-annotated directional steps.
     let j = i;
-    while (j < steps.length && !steps[j].transition && stepLabel(steps[j]) === label) j += 1;
+    while (j < steps.length && steps[j].dir && !steps[j].transition && stepLabel(steps[j]) === label) j += 1;
     const count = j - i;
     if (count === 1) lines.push(`${pad(n + 1)}. ${label}`);
     else lines.push(`${pad(n + 1)}–${pad(n + count)}. ${label} (${count}×)`);
@@ -900,7 +922,7 @@ export function formatRoute(r: RouteResult): string {
   const moves = n;
   let out = `BERECHNETER WEG von „${r.from}" nach „${r.to}" (${moves} Laufschritte, deterministisch aus der Karte, NICHT verändern):\n`;
   out += lines.join("\n");
-  if (r.clear) out += `\n\nKopierbarer Befehl: tue ${steps.map((s) => s.dir).join(" ")}`;
+  if (r.clear) out += `\n\nKopierbarer Befehl: tue ${steps.filter((s) => s.dir).map((s) => s.dir).join(" ")}`;
   else out += `\n\n(Enthält nicht-offensichtliche Stellen oder Kartenübergänge – kein einzelner kopierbarer Befehl möglich.)`;
   if (r.ascii) out += `\n\nKartenausschnitt des Weges:\n\`\`\`\n${r.ascii}\n\`\`\``;
   return out;

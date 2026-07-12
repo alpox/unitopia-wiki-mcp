@@ -102,6 +102,8 @@ export function routeUnified(g: UnifiedGraph, fromQ: string, toQ: string): Route
     });
     cur = from;
   }
-  const clear = steps.every((x) => x.dir && !x.hidden && !x.transition && x.source === "wiki");
+  // A map seam (`transition`) is a normal walk, not an action, so it no longer
+  // disqualifies a clear route; only a hidden move or a marcopolo-sourced step does.
+  const clear = steps.every((x) => !x.hidden && (x.dir || x.transition) && x.source === "wiki");
   return { ok: true, from: s.name ?? fromQ, to: t.name ?? toQ, steps, clear };
 }

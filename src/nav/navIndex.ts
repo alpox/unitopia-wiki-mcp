@@ -310,7 +310,48 @@ export class NavIndex {
    * `{ ambiguous: true }` when it genuinely can't decide — the caller then hands
    * the choice to the LLM rather than letting substring matching pick blindly.
    */
+  /** Overworld-gateway interpretations of an endpoint: the gridmap tiles that ARE
+   *  this location (a harbour, a city entrance, a region marker). Strict match — an
+   *  exact token-set on the gateway label, the whole query being the target-page
+   *  slug, or an "Eingang «City»" phrasing → the tile whose target is that city — so
+   *  an interior room name never masquerades as a gateway (which keeps ordinary
+   *  cross-page routes untouched). "Eingang" is semantics for the gateway node. */
+  private gridGatewayOf(q: string): { page: string; col: number; row: number; label: string }[] {
+    const norm = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, "");
+    const toks = (s: string) => new Set(roomTokens(s));
+    const setEq = (a: Set<string>, b: Set<string>) => a.size > 0 && a.size === b.size && [...a].every((x) => b.has(x));
+    const qTok = toks(q), qNorm = norm(q);
+    const eingangCity = /\beingang\b/i.test(deumlaut(q)) ? norm(deumlaut(q).replace(/\beingang\b/gi, "")) : null;
+    const out: { page: string; col: number; row: number; label: string }[] = [];
+    const seen = new Set<string>();
+    for (const [page, g] of this.gridByPage) for (const gw of g.gateways) {
+      const tgt = gw.target ? norm(gw.target.split("/").pop()!) : "";
+      // The city-proper entrance tile — not a sub-area gateway like a harbour, which
+      // targets the same city but via a #anchor (target "dörrstadt#Hafen").
+      const cityProper = !gw.anchor || setEq(toks(gw.label), toks(gw.target?.split("/").pop() ?? ""));
+      const match =
+        setEq(qTok, toks(gw.label)) ||                                        // exact label ("Hafen Dörrstadt")
+        (cityProper && !!tgt && tgt === (eingangCity ?? qNorm));              // "Eingang «City»" / bare city → its entrance
+      if (!match) continue;
+      const key = `${page}:${gw.col},${gw.row}`;
+      if (!seen.has(key)) { seen.add(key); out.push({ page, col: gw.col, row: gw.row, label: gw.label }); }
+    }
+    return out;
+  }
+
   async resolveAndRoute(fromQ: string, toQ: string): Promise<RouteResult & { ambiguous?: boolean }> {
+    // Overworld is authoritative: when BOTH endpoints are gateway tiles on a common
+    // gridmap (a harbour, a city entrance, a region marker), the journey between them
+    // is the real overland walk across the tiles — NOT a free in-page anchor teleport
+    // (e.g. Hafen von Dörrstadt → Eingang Dörrstadt is ~13 südwest/west steps on the
+    // Dörrland overworld, not one shortcut). Interior rooms don't match a gateway, so
+    // ordinary cross-page routes are unaffected.
+    const fg = this.gridGatewayOf(fromQ), tg = this.gridGatewayOf(toQ);
+    for (const a of fg) for (const b of tg) {
+      if (a.page !== b.page || (a.col === b.col && a.row === b.row)) continue;
+      const r = await this.routeByNames(a.page, `${a.col},${a.row}`, `${b.col},${b.row}`);
+      if (r.ok) return { ...r, from: a.label, to: b.label };
+    }
     const fc = this.candidates(fromQ), tc = this.candidates(toQ);
     const hint = tc.hint ?? fc.hint;
     const fm = this.endpointPages(fromQ), tm = this.endpointPages(toQ);
@@ -616,11 +657,23 @@ export class NavIndex {
         const toForms = i === chain.length - 1 ? tc.forms : [exit!];
         const leg = await this.routeByForms(page, fromForms, toForms);
         if (!leg.ok) return null; // this page-path doesn't actually connect
-        if (i > 0) steps.push({ dir: null, hidden: false, transition: `Übergang nach ${areaName(page)} (${entry})`, toName: entry });
-        steps.push(...(leg.steps ?? []));
+        const legSteps = leg.steps ?? [];
+        // A map seam is a normal walk, not a separate action: annotate the step that
+        // carries you across (the first move on the new map) rather than inserting a
+        // directionless teleport step. If the new leg has no move of its own (you
+        // enter exactly at its gateway room), hang the note on the previous step; only
+        // a truly step-less crossing falls back to a bare marker.
+        if (i > 0) {
+          const label = `Übergang nach ${areaName(page)} (${entry})`;
+          if (legSteps.length) legSteps[0] = { ...legSteps[0], transition: label };
+          else if (steps.length) steps[steps.length - 1] = { ...steps[steps.length - 1], transition: label };
+          else steps.push({ dir: null, hidden: false, transition: label, toName: entry });
+        }
+        steps.push(...legSteps);
         if (leg.ascii) asciiParts.push(`— ${areaName(page)} —\n${leg.ascii}`);
       }
-      return { ok: true, from: fromQ, to: toQ, steps, clear: false, ascii: asciiParts.join("\n\n") };
+      const clear = steps.every((x) => !x.hidden && (x.dir || x.transition));
+      return { ok: true, from: fromQ, to: toQ, steps, clear, ascii: asciiParts.join("\n\n") };
     };
     const baseEdges = chain.map((c) => c.edge);
     const finalSeams = chain.length > 1
