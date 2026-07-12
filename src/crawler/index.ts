@@ -8,6 +8,7 @@ import {
   renderBatch,
   parsePage,
   pageUrl,
+  BATCH_RENDER_TITLE,
   type BulkPage,
   type SiteInfo,
 } from "./mediaWikiClient.js";
@@ -60,6 +61,16 @@ function needsSingleRender(wikitext: string): boolean {
   return /\{\{\s*(PAGENAME|FULLPAGENAME|subst:)/i.test(wikitext);
 }
 
+/** A batch render runs under the fixed `BATCH_RENDER_TITLE`, so a page whose
+ *  templates resolve the page title only at render time — not visible in the
+ *  top-level wikitext, e.g. Set/effect tables that build `{{<Set>/{{PAGENAME}}}}`
+ *  cells — comes out wrong: the sentinel title leaks in as red-linked
+ *  `…/OKF-Sammelrendern` templates. Detecting that leak lets us re-render the page
+ *  individually with its real title so the effects resolve. */
+function batchContextLeaked(html: string): boolean {
+  return html.includes(BATCH_RENDER_TITLE);
+}
+
 async function main() {
   const full = process.argv.includes("--full");
   const singleMode = process.argv.includes("--render=server-single");
@@ -67,6 +78,16 @@ async function main() {
   const onlyNs = nsArg >= 0 ? Number(process.argv[nsArg + 1]) : undefined;
   const limitArg = process.argv.indexOf("--limit");
   const limit = limitArg >= 0 ? Number(process.argv[limitArg + 1]) : Infinity;
+  // --titles-file <path>: force-render exactly the newline-separated wiki titles in
+  // the file (regardless of revid), for a targeted re-render of specific pages.
+  const tfArg = process.argv.indexOf("--titles-file");
+  let titleSet: Set<string> | null = null;
+  if (tfArg >= 0) {
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(process.argv[tfArg + 1], "utf8");
+    titleSet = new Set(raw.split("\n").map((s) => s.trim()).filter(Boolean).map((s) => normalizeTitle(s)));
+    console.log(`[crawl] --titles-file: forcing ${titleSet.size} titles`);
+  }
 
   const bundleDir = path.resolve(config.kbDir);
   const site = await discover();
@@ -98,7 +119,9 @@ async function main() {
   // --- Decide which pages need (re)rendering: new or changed revid.
   const liveTitles = new Set(allPages.map((p) => normalizeTitle(p.title)));
   let toRender =
-    full || !state.lastRun
+    titleSet
+      ? allPages.filter((p) => titleSet!.has(normalizeTitle(p.title)))
+      : full || !state.lastRun
       ? allPages
       : allPages.filter((p) => {
           const prev = state.pages[normalizeTitle(p.title)];
@@ -205,8 +228,10 @@ async function main() {
       htmls = batch.map(() => "");
     }
     for (let i = 0; i < batch.length; i++) {
-      if (htmls[i]) await processPage(batch[i], htmls[i]);
-      else await renderSingle(batch[i]); // sentinel lost → fall back
+      // A lost sentinel (empty html) OR a page whose title-context templates leaked
+      // the batch title → re-render individually so PAGENAME resolves correctly.
+      if (htmls[i] && !batchContextLeaked(htmls[i])) await processPage(batch[i], htmls[i]);
+      else await renderSingle(batch[i]);
     }
     done += batch.length;
     console.log(`[crawl] rendered ${done}/${batchable.length}`);
@@ -218,8 +243,10 @@ async function main() {
   }
 
   // --- Deletions: in manifest but no longer live upstream.
-  // Skipped under --limit, where the enumeration is intentionally incomplete.
-  if (!Number.isFinite(limit)) for (const [key, ps] of Object.entries(state.pages)) {
+  // Skipped under --limit (enumeration intentionally incomplete) and under
+  // --titles-file (a targeted re-render, not a full sync — must never delete).
+  if (Number.isFinite(limit) || titleSet) { /* skip full-sync deletions */ }
+  else for (const [key, ps] of Object.entries(state.pages)) {
     if (!liveTitles.has(key) && (onlyNs === undefined || ps.ns === onlyNs)) {
       await removeConcept(bundleDir, ps.conceptId);
       logEntries.push({

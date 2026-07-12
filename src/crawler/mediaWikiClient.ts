@@ -310,6 +310,12 @@ export async function bulkFetchPages(
  * resolves to that context for all pages — callers re-render PAGENAME-dependent
  * pages individually.
  */
+/** The fixed title context a batch parse runs under. Because it leaks into the
+ *  output of any page whose templates resolve the page title at render time (e.g.
+ *  Set/effect tables that build `{{<Set>/{{PAGENAME}}}}` cells), the caller can
+ *  detect that leak in the rendered HTML and re-render such a page individually. */
+export const BATCH_RENDER_TITLE = "OKF-Sammelrendern";
+
 export async function renderBatch(
   site: SiteInfo,
   pages: { title: string; wikitext: string }[],
@@ -325,7 +331,7 @@ export async function renderBatch(
     action: "parse",
     text: blob,
     contentmodel: "wikitext",
-    title: "OKF-Sammelrendern",
+    title: BATCH_RENDER_TITLE,
     prop: "text",
     disablelimitreport: "1",
     disableeditsection: "1",
