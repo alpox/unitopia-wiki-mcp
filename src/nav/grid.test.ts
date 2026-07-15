@@ -8,10 +8,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { routeOnGrid, resolveTile, renderGridAscii } from "./grid/gridRouter.js";
 import { detectOrigin } from "./grid/tileGrid.js";
 import { parseImagemaps, parseLink } from "./grid/imagemap.js";
+import { entranceGateways } from "./grid/entranceGateways.js";
 import { loadNavIndex, buildNavInMemory } from "./navIndex.js";
+import { config } from "../config.js";
 import type { GridMap, Terrain, Dir } from "./grid/types.js";
 
 const COST: Record<Terrain, number> = { road: 1, grass: 3, forest: 3, rock: 4, water: 6, ocean: 12, other: 3 };
@@ -150,4 +154,31 @@ test("integration: Asia overworld routes between gateways (if artifact built)", 
   }
   assert.ok(r.ok, r.error);
   assert.ok((r.steps ?? []).length > 0, "a real overworld crossing has steps");
+});
+
+test("entranceGateways: synthesizes per-entrance gallierwald gateways (if artifacts built)", async (t) => {
+  const gridFile = join(config.kbDir, "_gridmaps", "gallien.json");
+  const marco = join(config.kbDir, "_marcopolo", "gallien", "gallien.md");
+  if (!existsSync(gridFile) || !existsSync(marco)) {
+    t.skip("gallien grid/marcopolo artifacts not present");
+    return;
+  }
+  const grid = JSON.parse(readFileSync(gridFile, "utf8")) as GridMap;
+  const gws = await entranceGateways(grid, config.kbDir);
+  const wald = gws.filter((g) => g.target === "gallierwald");
+  // One gateway per real edge room (N2 E3 S2 W5 = 12), each pinning a distinct
+  // "1 Rand" room by coordinate; the original single gateway is superseded.
+  assert.equal(wald.length, 12, "12 per-entrance gateways");
+  assert.ok(wald.every((g) => /^Rand@\d+,\d+$/.test(g.entry ?? "")), "each pins a coord-addressed Rand room");
+  assert.equal(new Set(wald.map((g) => g.entry)).size, 12, "distinct entry rooms");
+  assert.ok(!gws.some((g) => g.label === "gallischer Wald"), "original single gateway superseded");
+});
+
+test("entranceGateways: leaves gateways unchanged when a region has no marcopolo data", async (t) => {
+  const gridFile = join(config.kbDir, "_gridmaps", "asia.json");
+  if (!existsSync(gridFile)) { t.skip("asia grid artifact not present"); return; }
+  const grid = JSON.parse(readFileSync(gridFile, "utf8")) as GridMap;
+  const before = grid.gateways.length;
+  const gws = await entranceGateways(grid, config.kbDir);
+  assert.equal(gws.length, before, "no marcopolo overworld → gateways untouched (not wiped)");
 });

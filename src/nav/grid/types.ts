@@ -13,6 +13,11 @@ export interface Gateway {
   anchor: string | null;
   /** Label / gateway room name, e.g. "Foo-Ling-Yoo". */
   label: string;
+  /** For a synthesized entrance gateway: the SPECIFIC room to enter on the target
+   *  sub-map, addressed by coordinate (e.g. "Rand@66,0") so it pins one of several
+   *  identically-named edge rooms. When set, the seam uses it verbatim instead of
+   *  the structural-gate / name-match entry. */
+  entry?: string;
 }
 
 /** Fully parsed overworld map — the shipped, self-contained routing source. */

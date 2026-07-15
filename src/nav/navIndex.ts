@@ -4,6 +4,7 @@ import path from "node:path";
 import { config } from "../config.js";
 import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type PageMap, type RouteResult, type RouteStep } from "./mapGraph.js";
 import { routeOnGrid, renderGridAscii } from "./grid/gridRouter.js";
+import { entranceGateways } from "./grid/entranceGateways.js";
 import type { GridMap } from "./grid/types.js";
 import { routeUnified } from "./graph/router.js";
 import type { UnifiedGraph } from "./graph/types.js";
@@ -54,6 +55,12 @@ async function computeNavRooms(): Promise<NavRooms> {
   }
   // Overworld grid maps: each region + its gateway tiles become routable rooms.
   const gridMaps = await loadGridMaps(root);
+  for (const g of gridMaps) {
+    // Synthesize per-entrance gateways (overworld→sub-map) where marcopolo pins
+    // their positions, so the router enters a wald at the side it approaches
+    // instead of one curated tile. No-op for regions without the data.
+    try { g.gateways = await entranceGateways(g, root); } catch { /* keep original gateways */ }
+  }
   for (const g of gridMaps) {
     rooms.push({ page: g.page, name: g.region });
     for (const gw of g.gateways) {
@@ -486,8 +493,11 @@ export class NavIndex {
           // link points BACK to the overworld region (e.g. Koboldingen's lettered
           // "S Stadttore → märchenland"). Prefer it; only if the page has no such
           // back-link fall back to the name/keyword guess.
+          // A synthesized entrance gateway pins its exact room (coord-addressed,
+          // e.g. "Rand@66,0"); otherwise use the structural back-link gate, then the
+          // name/keyword guess.
           const gate = (linksByPage.get(tgt) ?? []).find((l) => l.targets.includes(regionSlug))?.name;
-          const cityRoom = gate ?? this.bestRoomOn(tgt, gw.anchor ?? gw.label) ?? gw.label;
+          const cityRoom = gw.entry ?? gate ?? this.bestRoomOn(tgt, gw.anchor ?? gw.label) ?? gw.label;
           add(grid.page, { to: tgt, exit: gw.label, entry: cityRoom }); // enter the city
           add(tgt, { to: grid.page, exit: cityRoom, entry: gw.label }); // step back onto the overworld
         }
@@ -672,10 +682,13 @@ export class NavIndex {
         // enter exactly at its gateway room), hang the note on the previous step; only
         // a truly step-less crossing falls back to a bare marker.
         if (i > 0) {
-          const label = `Übergang nach ${areaName(page)} (${entry})`;
+          // A coord-addressed entry ("Rand@66,0") pins the node for routing but must
+          // show its plain name to the user.
+          const entryLabel = entry!.replace(/@\d+,\d+$/, "");
+          const label = `Übergang nach ${areaName(page)} (${entryLabel})`;
           if (legSteps.length) legSteps[0] = { ...legSteps[0], transition: label };
           else if (steps.length) steps[steps.length - 1] = { ...steps[steps.length - 1], transition: label };
-          else steps.push({ dir: null, hidden: false, transition: label, toName: entry });
+          else steps.push({ dir: null, hidden: false, transition: label, toName: entryLabel });
         }
         steps.push(...legSteps);
         if (leg.ascii) asciiParts.push(`— ${areaName(page)} —\n${leg.ascii}`);
@@ -688,11 +701,18 @@ export class NavIndex {
       ? (this.pageEdges!.get(chain[chain.length - 2].page) ?? []).filter((e) => e.to === goal)
       : [];
     const tries = finalSeams.length ? finalSeams : [baseEdges[baseEdges.length - 1]];
+    // Several seams can lead into the goal page (e.g. one synthesized gateway per
+    // real forest entrance). Each enters at a FIXED room, but the grid leg to that
+    // gateway and the sub-map leg from it differ — so keep the CHEAPEST connecting
+    // stitch (fewest steps), i.e. the entrance that yields the fastest whole route,
+    // not merely the first that connects.
+    const cost = (r: RouteResult) => (r.steps ?? []).filter((s) => s.dir || s.transition).length;
+    let bestRes: RouteResult | null = null;
     for (const fe of tries) {
       const res = await stitch([...baseEdges.slice(0, -1), fe]);
-      if (res) return res;
+      if (res && (!bestRes || cost(res) < cost(bestRes))) bestRes = res;
     }
-    return { ok: false };
+    return bestRes ?? { ok: false };
   }
 
   /** The slug of `name` if it names a map page (its own area, e.g. "Borsippa"),

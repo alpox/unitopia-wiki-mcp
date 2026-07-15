@@ -595,8 +595,16 @@ function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>,
   // Separator-insensitive name compare: collapse any punctuation/space run to a
   // single space so a query "Nurikomoon-Tempel" matches a room "Nurikomoon
   // Tempel (Nuriko)". (Labels are single glyphs — compared raw, via `ql`.)
+  // Coordinate-addressed entry ("Rand@66,0"): pin the EXACT node, so a synthesized
+  // overworld entrance can enter one specific edge room among several identically
+  // named ones ("Rand"). Falls through to name matching if no node sits there.
+  const coord = /@(\d+),(\d+)\s*$/.exec(q);
+  if (coord) {
+    const [pr, pc] = [+coord[1], +coord[2]];
+    for (const n of nodes.values()) if (n.r === pr && n.c === pc) return n;
+  }
   const sep = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, " ").trim();
-  const nq = sep(q);
+  const nq = sep(q.replace(/@\d+,\d+\s*$/, ""));
   const base = (s: string) => sep(deumlaut(s).replace(/\s*\(.*$/, ""));
   let best: GNode | null = null, bestScore = -1;
   for (const n of nodes.values()) {
@@ -858,6 +866,57 @@ export function pageLinks(md: string): PageLink[] {
     }
   }
   flush();
+  return out;
+}
+
+/** A sub-map's entrance room: a labelled room whose legend links BACK to the
+ *  region overworld ("1 Rand → /gallien.md"), i.e. an edge where you can leave the
+ *  area onto the overworld. Classified onto a side of its sub-map's bounding box
+ *  and ordered along it, so it can be matched to a marcopolo/overworld entrance by
+ *  (side, ordinal). See [[overworld-ascii-entrance-seam]]. */
+export interface SubMapEntrance {
+  group: number; anchor: string; label: string; name: string | null;
+  r: number; c: number; side: "N" | "E" | "S" | "W"; ordinal: number;
+}
+export function subMapEntrances(md: string, regionSlug: string): SubMapEntrance[] {
+  const conn = connectorGlyphs(md);
+  const groups = splitGroups(md, conn);
+  if (!groups.length) return [];
+  const { nodes } = buildGraph(groups, conn);
+  // A label like "1" is reused per sub-map (main map: "1 Rand"→region; the
+  // Trabantenstadt sub-map: "1 Kellergeschoss"), so key the entrance on BOTH the
+  // label AND its region-linked name to avoid catching a same-labelled interior
+  // room on another sub-map.
+  const key = (label: string, name: string | null) => `${label}\t${deumlaut(name ?? "")}`;
+  const entranceKeys = new Set(
+    pageLinks(md).filter((l) => l.targets.includes(regionSlug)).map((l) => key(l.label, l.name)),
+  );
+  if (!entranceKeys.size) return [];
+  const byGroup = new Map<number, GNode[]>();
+  for (const n of nodes.values()) (byGroup.get(n.gi) ?? byGroup.set(n.gi, []).get(n.gi)!).push(n);
+  const out: SubMapEntrance[] = [];
+  for (const [gi, gnodes] of byGroup) {
+    const ent = gnodes.filter((n) => n.label && entranceKeys.has(key(n.label, n.name)));
+    if (!ent.length) continue;
+    // Bounding box of the WHOLE sub-map (all nodes), so an entrance is placed
+    // relative to the real map extent, not just the entrance cluster.
+    const rmin = Math.min(...gnodes.map((n) => n.r)), rmax = Math.max(...gnodes.map((n) => n.r));
+    const cmin = Math.min(...gnodes.map((n) => n.c)), cmax = Math.max(...gnodes.map((n) => n.c));
+    const sideOf = (r: number, c: number): SubMapEntrance["side"] => {
+      const dN = r - rmin, dS = rmax - r, dW = c - cmin, dE = cmax - c;
+      const min = Math.min(dN, dS, dW, dE);
+      return dN === min ? "N" : dS === min ? "S" : dW === min ? "W" : "E";
+    };
+    const rows = ent.map((n) => ({ n, side: sideOf(n.r, n.c) }));
+    for (const s of ["N", "E", "S", "W"] as const) {
+      const grp = rows.filter((x) => x.side === s)
+        .sort((a, b) => (s === "N" || s === "S" ? a.n.c - b.n.c : a.n.r - b.n.r));
+      grp.forEach(({ n }, i) => out.push({
+        group: gi, anchor: groups[gi]?.anchor ?? "", label: n.label!, name: n.name,
+        r: n.r, c: n.c, side: s, ordinal: i,
+      }));
+    }
+  }
   return out;
 }
 

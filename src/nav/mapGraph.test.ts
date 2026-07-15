@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { routeOnPage, pageMaps, listRooms, diagnosePage } from "./mapGraph.js";
+import { routeOnPage, pageMaps, listRooms, diagnosePage, subMapEntrances } from "./mapGraph.js";
 import { config } from "../config.js";
 
 const read = (slug: string) => readFileSync(join(config.kbDir, `${slug}.md`), "utf8");
@@ -19,6 +19,25 @@ const dirs = (r: ReturnType<typeof routeOnPage>) =>
   r.steps!.map((s) => (s.transition ? "T" : `${s.dir}${s.hidden ? "*" : ""}`)).join(" ");
 
 // ---------------------------------------------------------------------------
+// Regression: sub-map entrance classification (overworld→ASCII seam). The
+// gallierwald "1 Rand" edge rooms (linking back to the gallien overworld) must be
+// classified per side/ordinal — and must NOT catch a same-labelled interior room
+// on another sub-map ("1 Kellergeschoss" in the Trabantenstadt sub-map). Matches
+// the marcopolo g-wald entrance counts (N2 E3 S2 W5) by side.
+// ---------------------------------------------------------------------------
+test("gallierwald: subMapEntrances classifies the '1 Rand' edges by side", () => {
+  const ent = subMapEntrances(read("gallierwald"), "gallien");
+  assert.ok(ent.every((e) => e.name === "Rand"), "only region-linked 'Rand' rooms, no interior sub-map rooms");
+  assert.ok(ent.every((e) => e.group === 0), "all on the main map group, not the Trabantenstadt/Waldhaus sub-maps");
+  const bySide = (s: string) => ent.filter((e) => e.side === s).length;
+  assert.deepEqual([bySide("N"), bySide("E"), bySide("S"), bySide("W")], [2, 3, 2, 5]);
+  // ordinals are contiguous 0..n-1 per side
+  for (const s of ["N", "E", "S", "W"]) {
+    const ords = ent.filter((e) => e.side === s).map((e) => e.ordinal).sort((a, b) => a - b);
+    assert.deepEqual(ords, ords.map((_, i) => i));
+  }
+});
+
 // Regression: the Burg Tregyln map (drachenland.md) is drawn with box-drawing
 // glyphs incl. a "┌┼┐ / ┘o└" bridge crossing and "\_'\_" diagonals. Before the
 // isMapLine/CLS segmentation fix, these corner/underscore rows failed the map-
