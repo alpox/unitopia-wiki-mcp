@@ -603,6 +603,10 @@ function findNode(nodes: Map<string, GNode>, adj: Map<string, { to: string }[]>,
     let tier = -1;
     if (n.label && n.label.toLowerCase() === ql) tier = 4;
     else if (n.name && (sep(n.name) === nq || base(n.name) === nq)) tier = 3;
+    // A sub-map anchor the room carries (e.g. room 13's "#Trabantenstadt") is an
+    // alternate name for that room — ranked below a real name match but above a
+    // loose substring, so "Trabantenstadt" resolves to the room, not a stray hit.
+    else if (n.anchors && n.anchors.some((a) => sep(a.replace(/_/g, " ")) === nq)) tier = 2;
     else if (n.name && sep(n.name).includes(nq)) tier = 1;
     if (tier < 0) continue;
     const numbered = n.label && /^\d+$/.test(n.label) ? 1 : 0;
@@ -857,10 +861,21 @@ export function pageLinks(md: string): PageLink[] {
   return out;
 }
 
-/** List the labelled rooms on a page (for the nav room index). */
+/** List the labelled rooms on a page (for the nav room index). Sub-map anchors a
+ *  room links to (e.g. room 13's "[Ruine](#Trabantenstadt)") are alternate names
+ *  for that same room, so they are emitted as aliases — this lets a query for the
+ *  anchor ("Trabantenstadt") surface the page and resolve to the room carrying it
+ *  (the worldmap overlap anchors "#Karte"/"#toc" are structural, not room names). */
 export function listRooms(md: string): { name: string; label: string }[] {
   const out: { name: string; label: string }[] = [];
-  for (const g of splitGroups(md)) for (const [label, name] of g.labelName) if (name) out.push({ name, label });
+  for (const g of splitGroups(md)) {
+    for (const [label, name] of g.labelName) if (name) out.push({ name, label });
+    for (const [label, anchors] of g.labelAnchor)
+      for (const a of anchors) {
+        const alias = cleanName(a.replace(/_/g, " "));
+        if (alias && !/^(karte|toc)$/i.test(alias)) out.push({ name: alias, label });
+      }
+  }
   return out;
 }
 

@@ -416,14 +416,23 @@ export class NavIndex {
   private async ensurePageGraph(): Promise<void> {
     if (this.pageEdges) return;
     const root = path.resolve(config.kbDir);
+    const lastSeg = (p: string) => p.split("/").pop()!;
+    // A region whose overworld is a raster gif has NO ASCII rooms, so its page slug
+    // (e.g. "gallien") is absent from roomsByPage — yet a sub-map's edge rooms link
+    // BACK to it ("1 Rand → /gallien.md"). Those back-links identify the real
+    // entrances, so a gif-region slug must count as a valid link target too, else
+    // the structural gate is lost and the seam falls back to a wrong interior room.
+    const gridRegionSlugs = new Set([...this.gridByPage.keys()].map(lastSeg));
     const isMapPage = (p: string) => this.roomsByPage.has(p);
-    // Gateway rooms per page, filtered to targets that are themselves map pages.
+    const isLinkTarget = (p: string) => isMapPage(p) || gridRegionSlugs.has(p);
+    // Gateway rooms per page, filtered to targets that are map pages (or gif-region
+    // slugs — see above).
     const linksByPage = new Map<string, { name: string; targets: string[] }[]>();
     for (const page of this.roomsByPage.keys()) {
       const file = path.join(root, `${page}.md`);
       if (!existsSync(file)) continue;
       const gws = pageLinks(await readFile(file, "utf8"))
-        .map((g) => ({ name: g.name, targets: g.targets.filter(isMapPage) }))
+        .map((g) => ({ name: g.name, targets: g.targets.filter(isLinkTarget) }))
         .filter((g) => g.targets.length);
       if (gws.length) linksByPage.set(page, gws);
     }
@@ -462,7 +471,6 @@ export class NavIndex {
     // (Sandmännchen)" room). The fine-grained destination lives only on the
     // ASCII sub-map, so a name-matched seam here lets a route step off the
     // overworld straight onto the exact room, not a generic city entrance.
-    const lastSeg = (p: string) => p.split("/").pop()!;
     for (const grid of this.gridByPage.values()) {
       const regionSlug = lastSeg(grid.page);
       const regionPage = [...this.roomsByPage.keys()].find(
