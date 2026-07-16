@@ -15,6 +15,29 @@ import { slug } from "../../crawler/okf.js";
 
 export const TILE = 12;
 
+/** Group the whole-region imagemap rects (a sub-map's overworld footprint — the
+ *  ones `buildGridMap` drops from gateways) by target page, as inclusive tile boxes.
+ *  `rects` are in native pixels (already scaled). Point-ish rects (a city marker, ≤1
+ *  tile) and anchor-only `#` rects (forest SCENERY, still walkable) are excluded — a
+ *  footprint is a real, enterable-only ASCII sub-map area. */
+export function subMapFootprints(
+  rects: ImagemapRect[], cols: number, rows: number, origin: number, tile = TILE,
+): { target: string; boxes: [number, number, number, number][] }[] {
+  const by = new Map<string, [number, number, number, number][]>();
+  const clampC = (c: number) => Math.min(cols - 1, Math.max(0, c));
+  const clampR = (r: number) => Math.min(rows - 1, Math.max(0, r));
+  for (const r of rects) {
+    if (!r.target) continue; // '#' scenery (walkable forest terrain), not a sub-map
+    if (r.x2 - r.x1 <= tile && r.y2 - r.y1 <= tile) continue; // point gateway (a city)
+    const box: [number, number, number, number] = [
+      clampC(Math.floor((r.x1 - origin) / tile)), clampR(Math.floor((r.y1 - origin) / tile)),
+      clampC(Math.floor((r.x2 - origin) / tile)), clampR(Math.floor((r.y2 - origin) / tile)),
+    ];
+    (by.get(r.target) ?? by.set(r.target, []).get(r.target)!).push(box);
+  }
+  return [...by].map(([target, boxes]) => ({ target, boxes }));
+}
+
 /** All 8 directions with their (dRow, dCol) offsets. */
 export const OFF: Record<Dir, [number, number]> = {
   E: [0, 1], W: [0, -1], N: [-1, 0], S: [1, 0],
@@ -142,5 +165,9 @@ export function buildGridMap(
     });
   // Namespace grid pages under `karte/` so a region's raster overworld never
   // collides with its ASCII map page (e.g. drachenland.md's Burg Tregyln).
-  return { region, page: `karte/${slug(region)}`, cols, rows, tileSize: TILE, origin, tiles, cost, roadDirs, gateways };
+  const subMaps = subMapFootprints(rects, cols, rows, origin);
+  return {
+    region, page: `karte/${slug(region)}`, cols, rows, tileSize: TILE, origin, tiles, cost, roadDirs, gateways,
+    ...(subMaps.length ? { subMaps } : {}),
+  };
 }

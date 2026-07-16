@@ -24,36 +24,26 @@ import type { GridMap, Gateway } from "./types.js";
 import { subMapEntrances, deumlaut } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
 import { penetrableEntrances, bySide, type McEntrance, type Side } from "../marcopolo/entrances.js";
-import { parseImagemaps, type ImagemapBlock } from "./imagemap.js";
-
-/** Where the crawler archived the per-tile imagemap wikitext (same file the grid
- *  crawler reads). Holds EVERY rect — including the whole-region footprint rects
- *  that `buildGridMap` drops as "not point-ish". */
-const KACHELKARTE = "_wikitext/vorlage/kachelkarte.wiki";
-
 interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
 
-/** The overworld footprint of a sub-map = the union of ALL imagemap rects (the big
- *  region shapes included) that link to it, converted to tiles. This is the blocked
- *  ASCII-map body the gif paints as walkable grass. Returns null when the sub-map has
- *  no footprint rect (an ordinary point gateway — a city — has nothing to block). */
-function footprint(block: ImagemapBlock, targetSlug: string, grid: GridMap): { tiles: Set<string>; bbox: Bbox } | null {
-  const T = grid.tileSize, O = grid.origin;
-  const scale = block.displayWidth ? (O + grid.cols * T) / block.displayWidth : 1;
+/** The overworld footprint of a sub-map, read from the BAKED `grid.subMaps` (the
+ *  imagemap wikitext is not shipped in the KB tarball, so the footprint must travel
+ *  inside the grid artifact). Expands the tile boxes into a tile set + bounding box —
+ *  the blocked ASCII-map body the gif paints as walkable grass. Returns null when the
+ *  sub-map has no footprint (an ordinary point gateway — a city — has nothing to
+ *  block). */
+function footprintOf(grid: GridMap, targetSlug: string): { tiles: Set<string>; bbox: Bbox } | null {
+  const sm = grid.subMaps?.find((s) => normSlug(s.target) === targetSlug);
+  if (!sm) return null;
   const tiles = new Set<string>();
-  let minC = Infinity, maxC = -Infinity, minR = Infinity, maxR = -Infinity, big = false;
-  for (const r of block.rects) {
-    if (normSlug(r.target ?? "") !== targetSlug) continue;
-    const c1 = Math.floor((r.x1 * scale - O) / T), c2 = Math.floor((r.x2 * scale - O) / T);
-    const r1 = Math.floor((r.y1 * scale - O) / T), r2 = Math.floor((r.y2 * scale - O) / T);
-    if (c2 - c1 > 1 || r2 - r1 > 1) big = true; // a real area, not just the point marker
+  let minC = Infinity, maxC = -Infinity, minR = Infinity, maxR = -Infinity;
+  for (const [c1, r1, c2, r2] of sm.boxes)
     for (let c = Math.max(0, c1); c <= Math.min(grid.cols - 1, c2); c++)
       for (let rr = Math.max(0, r1); rr <= Math.min(grid.rows - 1, r2); rr++) {
         tiles.add(`${rr},${c}`);
         minC = Math.min(minC, c); maxC = Math.max(maxC, c); minR = Math.min(minR, rr); maxR = Math.max(maxR, rr);
       }
-  }
-  return big && tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
+  return tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
 }
 
 /** Place the i-th of `count` entrances just OUTSIDE the footprint on `side`, spread
@@ -129,6 +119,10 @@ const snapFree = (grid: GridMap, col: number, row: number): [number, number] | n
  *  from `kbDir`). Returns the region's gateways UNCHANGED when it lacks the data
  *  (no marcopolo overworld or too few shared landmarks). */
 export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Gateway[]> {
+  // Idempotent: an artifact enriched at crawl/bake time already carries the blocked
+  // footprint + per-side entrance gateways, so a second pass (at index build) must
+  // NOT re-inject off the injected gateways. Detect the side-labelled entrances.
+  if (grid.gateways.some((g) => /\((Nord|Ost|Süd|West)rand \d+\)$/.test(g.label))) return grid.gateways;
   const regionSlug = lastSeg(grid.page);
   // marcopolo dirs/files are de-umlauted ("märchenland" → "maerchenland"); try the
   // slug as-is first, then its de-umlauted form.
@@ -141,17 +135,6 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
   const mcCells = over.cellLinks.map((l) => ({ row: l.row, col: l.col, page: l.page }));
   const affine = fitAffine(landmarks(grid, mcCells));
   if (!affine) return grid.gateways;
-  // The imagemap block for THIS region — its whole-region rects give each sub-map's
-  // overworld footprint (dropped by buildGridMap, so re-read from the raw wikitext).
-  // Imagemap blocks are keyed by the raw name, which for SOME regions carries a gif
-  // version year ("Gallien2012") while others don't ("Asia"). Match the grid's
-  // display-name region exactly first, then fall back to a year-stripped compare.
-  const kk = path.join(kbDir, KACHELKARTE);
-  const blocks = existsSync(kk) ? parseImagemaps(await readFile(kk, "utf8")) : [];
-  const deYear = (s: string) => normSlug(s.replace(/\s*\d{4}$/, ""));
-  const block =
-    blocks.find((b) => normSlug(b.region) === normSlug(grid.region)) ??
-    blocks.find((b) => deYear(b.region) === normSlug(grid.region));
 
   const out: Gateway[] = [];
   const supersede = new Set<string>(); // labels of original gateways we replace
@@ -191,7 +174,7 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // tile. With the body blocked, the router must reach a real EDGE, and each edge
     // carries the matching wiki `1 Rand` entrance. When the gif marks no footprint
     // (an ordinary point gateway), fall back to placing relative to the point.
-    const fp = block ? footprint(block, normSlug(gw.target), grid) : null;
+    const fp = footprintOf(grid, normSlug(gw.target));
     if (fp) {
       grid.blocked ??= Array.from({ length: grid.rows }, () => new Array<boolean>(grid.cols).fill(false));
       for (const k of fp.tiles) { const [r, c] = k.split(",").map(Number); grid.blocked[r][c] = true; }

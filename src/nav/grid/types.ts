@@ -42,4 +42,10 @@ export interface GridMap {
    *  the overworld draws as walkable grass but that you may only ENTER at its edge).
    *  Synthesized at index-build time; absent means nothing is blocked. */
   blocked?: boolean[][];
+  /** Overworld FOOTPRINTS of ASCII sub-maps: the whole-region imagemap rects (which
+   *  `buildGridMap` drops as gateways) grouped by target page, as inclusive tile
+   *  boxes `[c1,r1,c2,r2]`. Baked into the artifact (the imagemap wikitext is NOT
+   *  shipped), so `entranceGateways` can block a forest body and place entrances on
+   *  its edges without re-reading the imagemap. */
+  subMaps?: { target: string; boxes: [number, number, number, number][] }[];
 }
