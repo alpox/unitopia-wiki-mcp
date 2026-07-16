@@ -24,6 +24,50 @@ import type { GridMap, Gateway } from "./types.js";
 import { subMapEntrances, deumlaut } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
 import { penetrableEntrances, bySide, type McEntrance, type Side } from "../marcopolo/entrances.js";
+import { parseImagemaps, type ImagemapBlock } from "./imagemap.js";
+
+/** Where the crawler archived the per-tile imagemap wikitext (same file the grid
+ *  crawler reads). Holds EVERY rect — including the whole-region footprint rects
+ *  that `buildGridMap` drops as "not point-ish". */
+const KACHELKARTE = "_wikitext/vorlage/kachelkarte.wiki";
+
+interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
+
+/** The overworld footprint of a sub-map = the union of ALL imagemap rects (the big
+ *  region shapes included) that link to it, converted to tiles. This is the blocked
+ *  ASCII-map body the gif paints as walkable grass. Returns null when the sub-map has
+ *  no footprint rect (an ordinary point gateway — a city — has nothing to block). */
+function footprint(block: ImagemapBlock, targetSlug: string, grid: GridMap): { tiles: Set<string>; bbox: Bbox } | null {
+  const T = grid.tileSize, O = grid.origin;
+  const scale = block.displayWidth ? (O + grid.cols * T) / block.displayWidth : 1;
+  const tiles = new Set<string>();
+  let minC = Infinity, maxC = -Infinity, minR = Infinity, maxR = -Infinity, big = false;
+  for (const r of block.rects) {
+    if (normSlug(r.target ?? "") !== targetSlug) continue;
+    const c1 = Math.floor((r.x1 * scale - O) / T), c2 = Math.floor((r.x2 * scale - O) / T);
+    const r1 = Math.floor((r.y1 * scale - O) / T), r2 = Math.floor((r.y2 * scale - O) / T);
+    if (c2 - c1 > 1 || r2 - r1 > 1) big = true; // a real area, not just the point marker
+    for (let c = Math.max(0, c1); c <= Math.min(grid.cols - 1, c2); c++)
+      for (let rr = Math.max(0, r1); rr <= Math.min(grid.rows - 1, r2); rr++) {
+        tiles.add(`${rr},${c}`);
+        minC = Math.min(minC, c); maxC = Math.max(maxC, c); minR = Math.min(minR, rr); maxR = Math.max(maxR, rr);
+      }
+  }
+  return big && tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
+}
+
+/** Place the i-th of `count` entrances just OUTSIDE the footprint on `side`, spread
+ *  evenly along that edge (W/E along rows, N/S along cols — matching the wiki edge
+ *  rooms' ordinal order), then snap to the nearest walkable, non-footprint tile. */
+function placeAtEdge(grid: GridMap, bbox: Bbox, side: Side, i: number, count: number): [number, number] | null {
+  const { minC, maxC, minR, maxR } = bbox;
+  const [lo, hi] = side === "N" || side === "S" ? [minC, maxC] : [minR, maxR];
+  const t = count <= 1 ? (lo + hi) / 2 : lo + ((hi - lo) * i) / (count - 1);
+  const a = Math.round(t);
+  const [c0, r0] =
+    side === "W" ? [minC - 1, a] : side === "E" ? [maxC + 1, a] : side === "N" ? [a, minR - 1] : [a, maxR + 1];
+  return snapFree(grid, c0, r0);
+}
 
 const lastSeg = (p: string) => p.split("/").pop()!;
 const normSlug = (s: string) =>
@@ -66,16 +110,20 @@ function landmarks(grid: GridMap, mcCells: { row: number; col: number; page: str
 }
 
 /** Nearest walkable tile to (col,row), spiralling out — an entrance must sit on a
- *  tile the grid router can actually stand on. */
-function snap(grid: GridMap, col: number, row: number, maxR = 4): [number, number] | null {
+ *  tile the grid router can actually stand on. `avoidBlocked` also skips the sub-map
+ *  footprint, so an entrance lands on the ground OUTSIDE the forest, not inside it. */
+function snap(grid: GridMap, col: number, row: number, maxR = 4, avoidBlocked = false): [number, number] | null {
   const ok = (c: number, r: number) =>
-    r >= 0 && r < grid.rows && c >= 0 && c < grid.cols && grid.tiles[r]?.[c] !== "ocean";
+    r >= 0 && r < grid.rows && c >= 0 && c < grid.cols && grid.tiles[r]?.[c] !== "ocean" &&
+    !(avoidBlocked && grid.blocked?.[r]?.[c]);
   const c0 = Math.round(col), r0 = Math.round(row);
   for (let rad = 0; rad <= maxR; rad++)
     for (let dr = -rad; dr <= rad; dr++) for (let dc = -rad; dc <= rad; dc++)
       if (Math.max(Math.abs(dr), Math.abs(dc)) === rad && ok(c0 + dc, r0 + dr)) return [c0 + dc, r0 + dr];
   return null;
 }
+/** Snap avoiding both ocean and the blocked footprint. */
+const snapFree = (grid: GridMap, col: number, row: number): [number, number] | null => snap(grid, col, row, 4, true);
 
 /** Build entrance gateways for one region grid map (async: reads wiki + marcopolo
  *  from `kbDir`). Returns the region's gateways UNCHANGED when it lacks the data
@@ -93,6 +141,17 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
   const mcCells = over.cellLinks.map((l) => ({ row: l.row, col: l.col, page: l.page }));
   const affine = fitAffine(landmarks(grid, mcCells));
   if (!affine) return grid.gateways;
+  // The imagemap block for THIS region — its whole-region rects give each sub-map's
+  // overworld footprint (dropped by buildGridMap, so re-read from the raw wikitext).
+  // Imagemap blocks are keyed by the raw name, which for SOME regions carries a gif
+  // version year ("Gallien2012") while others don't ("Asia"). Match the grid's
+  // display-name region exactly first, then fall back to a year-stripped compare.
+  const kk = path.join(kbDir, KACHELKARTE);
+  const blocks = existsSync(kk) ? parseImagemaps(await readFile(kk, "utf8")) : [];
+  const deYear = (s: string) => normSlug(s.replace(/\s*\d{4}$/, ""));
+  const block =
+    blocks.find((b) => normSlug(b.region) === normSlug(grid.region)) ??
+    blocks.find((b) => deYear(b.region) === normSlug(grid.region));
 
   const out: Gateway[] = [];
   const supersede = new Set<string>(); // labels of original gateways we replace
@@ -125,22 +184,29 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // Only inject on a confident profile match (allow ±2 total for river/corner
     // noise); otherwise leave the original single gateway untouched.
     if (!best || bestScore >= 3000) continue;
-    // Place one gateway per penetrable entrance, SIDE-RELATIVE to the wiki's own
-    // forest gateway — NOT by absolute marco→gif coordinates. The two maps don't
-    // align tile-for-tile (different left-water offset; the newer wiki gif may have
-    // physically moved things), so an absolute transform mis-lands the entrances on
-    // impenetrable edges. What IS reliable is the RELATIVE structure: an entrance on
-    // the forest's west edge sits to the west of the forest, so the gif router
-    // approaching from the west (e.g. from the harbour) reaches it first and enters
-    // the matching `1 Rand` room. marcopolo is used only to know which SIDES carry
-    // penetrable entrances and how many (via the count profile above), not where.
+    // The sub-map's overworld FOOTPRINT comes straight from the gif's own imagemap
+    // (the whole-region rects buildGridMap discards). Mark it impassable so the
+    // router can't cut STRAIGHT THROUGH the forest — the gif paints it as walkable
+    // grass, which is exactly why routes used to "enter" on an interior, impenetrable
+    // tile. With the body blocked, the router must reach a real EDGE, and each edge
+    // carries the matching wiki `1 Rand` entrance. When the gif marks no footprint
+    // (an ordinary point gateway), fall back to placing relative to the point.
+    const fp = block ? footprint(block, normSlug(gw.target), grid) : null;
+    if (fp) {
+      grid.blocked ??= Array.from({ length: grid.rows }, () => new Array<boolean>(grid.cols).fill(false));
+      for (const k of fp.tiles) { const [r, c] = k.split(",").map(Number); grid.blocked[r][c] = true; }
+    }
+    // marcopolo supplies which SIDES carry penetrable entrances and how many; the
+    // gif footprint supplies WHERE each side's edge is. An entrance on the west edge
+    // sits just west of the forest, so the router approaching from the west (e.g.
+    // the harbour) reaches it first and enters the matching `1 Rand` room.
     const mSide = bySide(best);
     let injected = 0;
     for (const s of ["N", "E", "S", "W"] as Side[]) {
       const ws = wSide[s], ms = mSide[s];
       const n = Math.min(ws.length, ms.length); // only marco-confirmed penetrable
       for (let i = 0; i < n; i++) {
-        const tile = placeOnSide(grid, gw.col, gw.row, s, i, n);
+        const tile = fp ? placeAtEdge(grid, fp.bbox, s, i, n) : placeOnSide(grid, gw.col, gw.row, s, i, n);
         if (!tile) continue;
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,

@@ -996,7 +996,7 @@ export function formatRoute(r: RouteResult): string {
   const moves = n;
   let out = `BERECHNETER WEG von „${r.from}" nach „${r.to}" (${moves} Laufschritte, deterministisch aus der Karte, NICHT verändern):\n`;
   out += lines.join("\n");
-  if (r.clear) out += `\n\nKopierbarer Befehl: tue ${steps.filter((s) => s.dir).map((s) => s.dir).join(" ")}`;
+  if (r.clear) out += `\n\nKopierbarer Befehl: tue ${steps.filter((s) => s.dir).map((s) => s.dir).join(", ")}`;
   else out += `\n\n(Enthält nicht-offensichtliche Stellen oder Kartenübergänge – kein einzelner kopierbarer Befehl möglich.)`;
   if (r.ascii) out += `\n\nKartenausschnitt des Weges:\n\`\`\`\n${r.ascii}\n\`\`\``;
   return out;

@@ -38,4 +38,8 @@ export interface GridMap {
   /** [row][col] road directions (empty array when the tile is not a road). */
   roadDirs: Dir[][][];
   gateways: Gateway[];
+  /** [row][col] impassable mask, e.g. an ASCII sub-map's footprint (a forest body
+   *  the overworld draws as walkable grass but that you may only ENTER at its edge).
+   *  Synthesized at index-build time; absent means nothing is blocked. */
+  blocked?: boolean[][];
 }

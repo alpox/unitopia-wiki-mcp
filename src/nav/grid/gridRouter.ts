@@ -20,7 +20,7 @@ const DIRS = Object.keys(OFF) as Dir[];
 
 const key = (c: number, r: number) => `${c},${r}`;
 const walkable = (g: GridMap, c: number, r: number) =>
-  c >= 0 && r >= 0 && c < g.cols && r < g.rows;
+  c >= 0 && r >= 0 && c < g.cols && r < g.rows && !g.blocked?.[r]?.[c];
 
 const WET = new Set(["water", "ocean"]);
 /** You can swim ~this many tiles safely; a longer continuous swim is deadly. */

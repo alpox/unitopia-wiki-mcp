@@ -183,7 +183,7 @@ export async function route(
       from: r.from,
       to: r.to,
       steps,
-      command: r.clear ? `tue ${(r.steps ?? []).filter((s) => s.dir).map((s) => s.dir).join(" ")}` : null,
+      command: r.clear ? `tue ${(r.steps ?? []).filter((s) => s.dir).map((s) => s.dir).join(", ")}` : null,
       ascii: r.ascii,
       text: formatRoute(r),
     };
