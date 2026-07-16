@@ -125,14 +125,22 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // Only inject on a confident profile match (allow ±2 total for river/corner
     // noise); otherwise leave the original single gateway untouched.
     if (!best || bestScore >= 3000) continue;
-    // Match wiki edge rooms to marcopolo cells by (side, ordinal) and inject.
+    // Place one gateway per penetrable entrance, SIDE-RELATIVE to the wiki's own
+    // forest gateway — NOT by absolute marco→gif coordinates. The two maps don't
+    // align tile-for-tile (different left-water offset; the newer wiki gif may have
+    // physically moved things), so an absolute transform mis-lands the entrances on
+    // impenetrable edges. What IS reliable is the RELATIVE structure: an entrance on
+    // the forest's west edge sits to the west of the forest, so the gif router
+    // approaching from the west (e.g. from the harbour) reaches it first and enters
+    // the matching `1 Rand` room. marcopolo is used only to know which SIDES carry
+    // penetrable entrances and how many (via the count profile above), not where.
     const mSide = bySide(best);
     let injected = 0;
     for (const s of ["N", "E", "S", "W"] as Side[]) {
       const ws = wSide[s], ms = mSide[s];
-      for (let i = 0; i < Math.min(ws.length, ms.length); i++) {
-        const [c, r] = apply(affine, [ms[i].col, ms[i].row]);
-        const tile = snap(grid, c, r);
+      const n = Math.min(ws.length, ms.length); // only marco-confirmed penetrable
+      for (let i = 0; i < n; i++) {
+        const tile = placeOnSide(grid, gw.col, gw.row, s, i, n);
         if (!tile) continue;
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,
@@ -149,6 +157,23 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
 }
 
 const sideName = (s: Side) => ({ N: "Nordrand", E: "Ostrand", S: "Südrand", W: "Westrand" }[s]);
+
+/** Position the i-th entrance (of `count`) on `side` of the forest, RELATIVE to the
+ *  wiki forest gateway at (ax,ay): offset one small step off the anchor toward that
+ *  side, and spread the entrances along the side's axis (W/E ordered N→S by row;
+ *  N/S ordered W→E by col — matching subMapEntrances ordinals). Snapped to the
+ *  nearest walkable tile. Absolute marco coords are deliberately NOT used — only the
+ *  approach SIDE matters, and that is reliable across the two differently-drawn maps. */
+function placeOnSide(grid: GridMap, ax: number, ay: number, side: Side, i: number, count: number): [number, number] | null {
+  const D = 3, STEP = 2;
+  const off = Math.round((i - (count - 1) / 2) * STEP);
+  let c = ax, r = ay;
+  if (side === "W") { c = ax - D; r = ay + off; }
+  else if (side === "E") { c = ax + D; r = ay + off; }
+  else if (side === "N") { r = ay - D; c = ax + off; }
+  else { r = ay + D; c = ax + off; } // S
+  return snap(grid, c, r);
+}
 
 function bySideWiki(ent: { side: Side; ordinal: number; name: string | null; r: number; c: number }[]) {
   const g: Record<Side, typeof ent> = { N: [], E: [], S: [], W: [] };
