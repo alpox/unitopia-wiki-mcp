@@ -626,8 +626,18 @@ export class NavIndex {
       const ascii = all.filter((p) => !this.gridByPage.has(p));
       return new Set(ascii.length ? ascii : all);
     };
-    const starts = preferAscii(this.endpointPages(fromQ).keys());
-    const dests = preferAscii(this.endpointPages(toQ).keys());
+    // An overworld gateway (a harbour/city marker on a gif) IS the authoritative
+    // overworld terminal: route from/to that exact tile, overriding an interior
+    // room that merely shares its name. So "hafen aremorica" and "Hafen von
+    // Aremorica" both start at the gallien overworld harbour tile rather than
+    // gallierdorf's coincidentally-named interior "Hafen Aremorica" room. Only
+    // reached when the endpoints share no page, so same-city routes are untouched.
+    const startSeed = new Map<string, string>();
+    const destSeed = new Map<string, string>();
+    for (const g of this.gridGatewayOf(fromQ)) if (!startSeed.has(g.page)) startSeed.set(g.page, `${g.col},${g.row}`);
+    for (const g of this.gridGatewayOf(toQ)) if (!destSeed.has(g.page)) destSeed.set(g.page, `${g.col},${g.row}`);
+    const starts = startSeed.size ? new Set(startSeed.keys()) : preferAscii(this.endpointPages(fromQ).keys());
+    const dests = destSeed.size ? new Set(destSeed.keys()) : preferAscii(this.endpointPages(toQ).keys());
     if (!starts.size || !dests.size) return { ok: false };
     // BFS over pages (shortest number of maps). Multi-source from every start
     // page; stop at the first dest page that is not itself a start page.
@@ -671,8 +681,10 @@ export class NavIndex {
         const page = chain[i].page;
         const entry = i === 0 ? null : edges[i]!.entry; // arrive here
         const exit = i === chain.length - 1 ? null : edges[i + 1]!.exit; // leave here
-        const fromForms = i === 0 ? fc.forms : [entry!];
-        const toForms = i === chain.length - 1 ? tc.forms : [exit!];
+        // A seeded gateway terminal routes from/to its exact tile ("col,row"),
+        // not a name form — the harbour marker is a coordinate, not a room name.
+        const fromForms = i === 0 ? (startSeed.get(page) ? [startSeed.get(page)!] : fc.forms) : [entry!];
+        const toForms = i === chain.length - 1 ? (destSeed.get(page) ? [destSeed.get(page)!] : tc.forms) : [exit!];
         const leg = await this.routeByForms(page, fromForms, toForms);
         if (!leg.ok) return null; // this page-path doesn't actually connect
         const legSteps = leg.steps ?? [];

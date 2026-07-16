@@ -39,6 +39,22 @@ test("overworld: Hafen -> Eingang Dörrstadt walks the grid, not a teleport", as
     "every step heads south-west/west across the overworld");
 });
 
+test("overworld: a harbour named loosely resolves to its overworld tile", async () => {
+  // The overworld gateway is "Hafen von Aremorica"; gallierdorf also has an
+  // interior room literally named "Hafen Aremorica". A cross-region trip to the
+  // Gallierwald must start at the OVERWORLD harbour tile regardless of the filler
+  // word "von", so the natural phrasing routes identically to the exact name and
+  // never detours through the coincidentally-named interior room.
+  const exact = await nav.resolveAndRoute("Hafen von Aremorica", "Trabantenstadt");
+  if (!exact.ok) { return; } // gallien grid/marcopolo artifacts not built → nothing to assert
+  const sig = (r: typeof exact) => (r.steps ?? []).map((s) => s.dir ?? s.transition ?? "·").join("|");
+  for (const q of ["hafen aremorica", "Hafen Aremorica"]) {
+    const r = await nav.resolveAndRoute(q, "Trabantenstadt");
+    assert.ok(r.ok, `"${q}" should route across the overworld`);
+    assert.equal(sig(r), sig(exact), `"${q}" must take the same overworld route as the exact name`);
+  }
+});
+
 test("cross-page: does not fabricate a route between unconnected areas", async () => {
   // Two rooms with no reciprocal ASCII gateway chain must fail cleanly, not
   // invent a teleport. (Neither endpoint shares a page nor a gateway path.)
