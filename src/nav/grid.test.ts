@@ -18,7 +18,7 @@ import { loadNavIndex, buildNavInMemory } from "./navIndex.js";
 import { config } from "../config.js";
 import type { GridMap, Terrain, Dir } from "./grid/types.js";
 
-const COST: Record<Terrain, number> = { road: 1, grass: 3, forest: 3, rock: 4, water: 6, ocean: 12, other: 3 };
+const COST: Record<Terrain, number> = { road: 1, grass: 3, forest: 3, rock: 4, sand: 4, water: 6, ocean: 12, other: 3 };
 const GLYPH: Record<string, Terrain> = { ".": "grass", "=": "road", " ": "ocean", "~": "water", "^": "rock", ",": "forest" };
 
 /** Build a GridMap from ASCII rows (one char = one tile). */

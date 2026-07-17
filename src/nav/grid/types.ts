@@ -2,7 +2,7 @@
 
 export type Dir = "E" | "W" | "N" | "S" | "NE" | "SW" | "NW" | "SE";
 
-export type Terrain = "road" | "grass" | "forest" | "rock" | "water" | "ocean" | "other";
+export type Terrain = "road" | "grass" | "forest" | "rock" | "sand" | "water" | "ocean" | "other";
 
 /** A tile that links to another wiki page (city entrance, dimension gate, …). */
 export interface Gateway {

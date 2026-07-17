@@ -46,17 +46,27 @@ function footprintOf(grid: GridMap, targetSlug: string): { tiles: Set<string>; b
   return tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
 }
 
-/** Place the i-th of `count` entrances just OUTSIDE the footprint on `side`, spread
- *  evenly along that edge (W/E along rows, N/S along cols — matching the wiki edge
- *  rooms' ordinal order), then snap to the nearest walkable, non-footprint tile. */
-function placeAtEdge(grid: GridMap, bbox: Bbox, side: Side, i: number, count: number): [number, number] | null {
-  const { minC, maxC, minR, maxR } = bbox;
-  const [lo, hi] = side === "N" || side === "S" ? [minC, maxC] : [minR, maxR];
-  const t = count <= 1 ? (lo + hi) / 2 : lo + ((hi - lo) * i) / (count - 1);
-  const a = Math.round(t);
-  const [c0, r0] =
-    side === "W" ? [minC - 1, a] : side === "E" ? [maxC + 1, a] : side === "N" ? [a, minR - 1] : [a, maxR + 1];
-  return snapFree(grid, c0, r0);
+/** Place an entrance just OUTSIDE the gif footprint on `side`, at the position
+ *  marcopolo records for it. The overworld marcopolo map draws every g-wald entrance
+ *  at a precise cell; normalising that cell within marcopolo's own entrance-cluster
+ *  bbox and re-projecting onto the gif footprint bbox (a LOCAL affine, forest→forest)
+ *  reproduces where the entrance actually sits along the edge — WITHOUT relying on a
+ *  global marco↔gif alignment, which does not hold (the two overworlds are offset and
+ *  differently drawn). Only the axis along the edge is mapped (W/E: row; N/S: col);
+ *  the cross-axis is pinned one tile off the footprint. Snapped to a walkable,
+ *  non-footprint tile. */
+function placeByMarco(grid: GridMap, fp: Bbox, mc: Bbox, side: Side, e: McEntrance): [number, number] | null {
+  const lerp = (v: number, lo: number, hi: number, Lo: number, Hi: number) =>
+    hi <= lo ? (Lo + Hi) / 2 : Lo + ((v - lo) / (hi - lo)) * (Hi - Lo);
+  let c: number, r: number;
+  if (side === "W" || side === "E") {
+    r = Math.round(lerp(e.row, mc.minR, mc.maxR, fp.minR, fp.maxR));
+    c = side === "W" ? fp.minC - 1 : fp.maxC + 1;
+  } else {
+    c = Math.round(lerp(e.col, mc.minC, mc.maxC, fp.minC, fp.maxC));
+    r = side === "N" ? fp.minR - 1 : fp.maxR + 1;
+  }
+  return snapFree(grid, c, r);
 }
 
 const lastSeg = (p: string) => p.split("/").pop()!;
@@ -184,12 +194,19 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // sits just west of the forest, so the router approaching from the west (e.g.
     // the harbour) reaches it first and enters the matching `1 Rand` room.
     const mSide = bySide(best);
+    // marcopolo's own entrance-cluster bounding box — the reference frame the
+    // per-entrance cell positions are normalised against before re-projecting onto
+    // the gif footprint (see placeByMarco).
+    const mcB: Bbox = {
+      minC: Math.min(...best.map((e) => e.col)), maxC: Math.max(...best.map((e) => e.col)),
+      minR: Math.min(...best.map((e) => e.row)), maxR: Math.max(...best.map((e) => e.row)),
+    };
     let injected = 0;
     for (const s of ["N", "E", "S", "W"] as Side[]) {
       const ws = wSide[s], ms = mSide[s];
       const n = Math.min(ws.length, ms.length); // only marco-confirmed penetrable
       for (let i = 0; i < n; i++) {
-        const tile = fp ? placeAtEdge(grid, fp.bbox, s, i, n) : placeOnSide(grid, gw.col, gw.row, s, i, n);
+        const tile = fp ? placeByMarco(grid, fp.bbox, mcB, s, ms[i]) : placeOnSide(grid, gw.col, gw.row, s, i, n);
         if (!tile) continue;
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,

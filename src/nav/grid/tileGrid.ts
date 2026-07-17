@@ -48,16 +48,20 @@ export const OFF: Record<Dir, [number, number]> = {
  *  are additionally subject to a consecutive-step drowning penalty in the router
  *  (a short crossing is fine; a long swim is deadly), so their base stays modest. */
 const COST: Record<Terrain, number> = {
-  road: 1, grass: 3, forest: 3, rock: 4, water: 5, ocean: 10, other: 3,
+  road: 1, grass: 3, forest: 3, rock: 4, sand: 3, water: 5, ocean: 10, other: 3,
 };
 
 /** Classify a single palette color into a terrain family. */
 function colorFamily([r, g, b]: [number, number, number]): Terrain {
   if (r < 40 && g < 40 && b < 40) return "ocean"; // near-black (also road strokes)
   if (b > 150 && r < 110) return "water";
-  if (r > 110 && g > 70 && b < 90) return "road"; // brown dirt
+  // Bright yellow/gold = coastal SAND/beach (walkable, but NOT a road) — the sea
+  // border runs almost every map's edge, so treating it as a cheap road turned the
+  // whole coastline into a preferred highway. Yellow has r≈g; brown dirt has r≫g.
+  if (r > 180 && g > 140 && b < g - 40) return "sand";
+  if (r > 90 && g > 30 && g < 150 && b < 70 && r > g + 40) return "road"; // brown dirt
   if (r > 150 && g > 150 && b > 150) return "rock"; // grey
-  if (g > r && g > b) return g < 120 ? "forest" : "grass"; // dark vs bright green
+  if (g > r && g > b) return g < 140 ? "forest" : "grass"; // dark forest vs bright grass green
   return "other";
 }
 
@@ -91,7 +95,9 @@ function classifyTile(gif: DecodedGif, ox: number, oy: number): TileInfo {
     const fam = colorFamily(rgb);
     famCount.set(fam, (famCount.get(fam) ?? 0) + 1);
     const [r, g, b] = rgb;
-    const isStroke = (r < 60 && g < 60 && b < 60) || (r > 110 && g > 70 && b < 90);
+    // A road stroke is a near-black line or a dark-brown dirt path — NOT bright
+    // sand yellow (r≈g), which would otherwise light up whole beaches as roads.
+    const isStroke = (r < 60 && g < 60 && b < 60) || (r > 90 && g > 30 && g < 150 && b < 70 && r > g + 40);
     strokeAt[y][x] = isStroke;
     if (isStroke) stroke++;
   }

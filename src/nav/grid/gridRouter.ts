@@ -130,7 +130,7 @@ function t2(k: string): [number, number] { const [c, r] = k.split(",").map(Numbe
 function t3(k: string): string { const [c, r] = k.split(","); return `${c},${r}`; }
 
 const GLYPH: Record<string, string> = {
-  ocean: " ", grass: ".", forest: ",", rock: "^", water: "~", road: "=", other: ":",
+  ocean: " ", grass: ".", forest: ",", rock: "^", sand: "°", water: "~", road: "=", other: ":",
 };
 
 /** Render the whole map as ASCII: terrain glyphs, numbered gateway markers and a
