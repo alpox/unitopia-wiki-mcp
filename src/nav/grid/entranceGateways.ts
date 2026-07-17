@@ -46,26 +46,22 @@ function footprintOf(grid: GridMap, targetSlug: string): { tiles: Set<string>; b
   return tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
 }
 
-/** Place an entrance just OUTSIDE the gif footprint on `side`, at the FRACTIONAL
- *  position the wiki sub-map records for it. The wiki ascii sub-map is the
- *  authoritative schematic for WHERE along an edge each entrance sits: take the
- *  entrance room's position as a fraction of the whole sub-map's extent along the
- *  edge axis (W/E → row within [mapR0,mapR1]; N/S → col within [mapC0,mapC1]) and
- *  re-project it onto the gif footprint's edge span, then step one tile off the
- *  footprint on `side`. This keeps entrances off the footprint CORNERS (a corner is
- *  never a straight crossing) and needs no marco↔gif coordinate alignment, which does
- *  not hold. marcopolo supplies which sides are penetrable + the straight direction;
- *  the wiki supplies the along-edge position. Snapped to a walkable, non-footprint tile. */
-function placeByWikiFrac(grid: GridMap, fp: Bbox, side: Side, e: SubMapEntrance): [number, number] | null {
-  const frac = (v: number, lo: number, hi: number) => (hi <= lo ? 0.5 : (v - lo) / (hi - lo));
+/** Place an entrance just OUTSIDE the gif footprint on `side`, at the marcopolo
+ *  overworld position of the entrance mapped through the region affine. marcopolo's
+ *  overworld is GEOMETRIC (unlike the wiki ascii sub-map, which is a topological
+ *  schematic whose row/col spacing does NOT map linearly to the gif — that collapses
+ *  several distinct entrances onto one tile, so the router enters the wrong `1 Rand`,
+ *  "one tile too far north"). The affine (fit on shared landmarks, already gating the
+ *  match) gives the along-edge position; the cross-axis is pinned one tile off the
+ *  footprint so the crossing step is straight. Snapped to a walkable, non-footprint tile. */
+function placeByAffine(grid: GridMap, fp: Bbox, affine: Affine, side: Side, e: McEntrance): [number, number] | null {
+  const [gx, gy] = apply(affine, [e.col, e.row]);
   let c: number, r: number;
   if (side === "W" || side === "E") {
-    const f = frac(e.r, e.mapR0, e.mapR1);
-    r = Math.round(fp.minR + f * (fp.maxR - fp.minR));
+    r = Math.round(gy);
     c = side === "W" ? fp.minC - 1 : fp.maxC + 1;
   } else {
-    const f = frac(e.c, e.mapC0, e.mapC1);
-    c = Math.round(fp.minC + f * (fp.maxC - fp.minC));
+    c = Math.round(gx);
     r = side === "N" ? fp.minR - 1 : fp.maxR + 1;
   }
   return snapFree(grid, c, r);
@@ -215,7 +211,8 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
       const ws = pickCentered(wSide[s], ms.length);
       const n = ws.length; // == min(marco, wiki), only marco-confirmed penetrable
       for (let i = 0; i < n; i++) {
-        const tile = fp ? placeByWikiFrac(grid, fp.bbox, s, ws[i]) : placeOnSide(grid, gw.col, gw.row, s, i, n);
+        // Geometric position from marcopolo (ms[i]); entry ROOM from the wiki (ws[i]).
+        const tile = fp ? placeByAffine(grid, fp.bbox, affine, s, ms[i]) : placeOnSide(grid, gw.col, gw.row, s, i, n);
         if (!tile) continue;
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,
