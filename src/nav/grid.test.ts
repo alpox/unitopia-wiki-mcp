@@ -174,6 +174,22 @@ test("entranceGateways: synthesizes per-entrance gallierwald gateways (if artifa
   assert.ok(!gws.some((g) => g.label === "gallischer Wald"), "original single gateway superseded");
 });
 
+test("entranceGateways: blocks the village footprint and injects its mid-N/mid-S entrances (if artifacts built)", async (t) => {
+  const gridFile = join(config.kbDir, "_gridmaps", "gallien.json");
+  const marco = join(config.kbDir, "_marcopolo", "gallien", "gallien.md");
+  if (!existsSync(gridFile) || !existsSync(marco)) { t.skip("gallien artifacts not present"); return; }
+  const grid = JSON.parse(readFileSync(gridFile, "utf8")) as GridMap;
+  const gws = await entranceGateways(grid, config.kbDir);
+  // Gallierdorf is a solid sub-map entered only mid-N + mid-S: marcopolo lists 2
+  // crossings though the wiki over-marks 8 `G` back-link cells, so exactly 2
+  // entrances are injected and the footprint is blocked (so the router can't cut
+  // through the village).
+  const dorf = gws.filter((g) => g.target === "gallierdorf");
+  assert.equal(dorf.length, 2, "2 injected village entrances (mid-N, mid-S)");
+  assert.ok(dorf.some((g) => /Nordrand/.test(g.label)) && dorf.some((g) => /Südrand/.test(g.label)), "one north, one south");
+  assert.ok((grid.blocked ?? []).some((row) => row.some(Boolean)), "village footprint marked blocked");
+});
+
 test("entranceGateways: leaves gateways unchanged when a region has no marcopolo data", async (t) => {
   const gridFile = join(config.kbDir, "_gridmaps", "asia.json");
   if (!existsSync(gridFile)) { t.skip("asia grid artifact not present"); return; }

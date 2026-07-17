@@ -264,7 +264,28 @@ function hintFor(dir: string, glyphs: string[], climb: boolean): string | null {
 
 /** Cross-page portals: for each node that carried a cross-page link, the target
  *  page basename. The merge step turns these into transition edges between the
- *  two pages' graphs. Returned separately from the room graph. */
-export function crossPortals(m: McMap): { nodeLabel: string; row: number; col: number; page: string }[] {
-  return m.cellLinks.map((l) => ({ nodeLabel: l.label, row: l.row, col: l.col, page: l.page }));
+ *  two pages' graphs. Returned separately from the room graph.
+ *
+ *  `edgeDir` = the SINGLE straight connecting edge (N/S/E/W) at the portal cell, or
+ *  null when the cell has zero or several straight edges. marcopolo draws a real
+ *  map-crossing as ONE straight edge running to the border (never diagonal), so on
+ *  the OVERWORLD side each entrance cell has a unique straight edge naming the side
+ *  it sits on / the axis you cross — the authoritative penetrable-direction signal
+ *  (a sub-map's OUTER overlap cell, by contrast, shows edges in many directions, so
+ *  edgeDir is null there). See [[overworld-ascii-entrance-seam]] "overlap mechanism". */
+export function crossPortals(m: McMap): { nodeLabel: string; row: number; col: number; page: string; edgeDir: "N" | "S" | "E" | "W" | null }[] {
+  const rows = m.ascii.split("\n");
+  const W = Math.max(0, ...rows.map((r) => r.length));
+  const grid = rows.map((r) => r.padEnd(W, " ").split(""));
+  const at = (r: number, c: number) => (r >= 0 && r < grid.length && c >= 0 && c < W ? grid[r][c] : " ");
+  const STRAIGHT: ("N" | "S" | "E" | "W")[] = ["N", "S", "E", "W"];
+  const edgeDirOf = (row: number, col: number): "N" | "S" | "E" | "W" | null => {
+    const hit = STRAIGHT.filter((d) => {
+      const [dr, dc] = OFF[d];
+      const ax = axesOf(at(row + dr, col + dc));
+      return ax === "any" || (ax !== null && ax.includes(d));
+    });
+    return hit.length === 1 ? hit[0] : null;
+  };
+  return m.cellLinks.map((l) => ({ nodeLabel: l.label, row: l.row, col: l.col, page: l.page, edgeDir: edgeDirOf(l.row, l.col) }));
 }

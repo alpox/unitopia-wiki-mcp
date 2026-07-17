@@ -877,6 +877,11 @@ export function pageLinks(md: string): PageLink[] {
 export interface SubMapEntrance {
   group: number; anchor: string; label: string; name: string | null;
   r: number; c: number; side: "N" | "E" | "S" | "W"; ordinal: number;
+  /** Bounding box of the WHOLE sub-map (all rooms), so an entrance's position can be
+   *  taken as a FRACTION along its side and re-projected onto the gif footprint edge —
+   *  the wiki sub-map is the authoritative forest/area schematic for where along an
+   *  edge each entrance sits (marcopolo supplies penetrability + straight direction). */
+  mapR0: number; mapR1: number; mapC0: number; mapC1: number;
 }
 export function subMapEntrances(md: string, regionSlug: string): SubMapEntrance[] {
   const conn = connectorGlyphs(md);
@@ -914,6 +919,7 @@ export function subMapEntrances(md: string, regionSlug: string): SubMapEntrance[
       grp.forEach(({ n }, i) => out.push({
         group: gi, anchor: groups[gi]?.anchor ?? "", label: n.label!, name: n.name,
         r: n.r, c: n.c, side: s, ordinal: i,
+        mapR0: rmin, mapR1: rmax, mapC0: cmin, mapC1: cmax,
       }));
     }
   }

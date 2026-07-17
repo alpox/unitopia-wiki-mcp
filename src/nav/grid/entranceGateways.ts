@@ -21,7 +21,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { GridMap, Gateway } from "./types.js";
-import { subMapEntrances, deumlaut } from "../mapGraph.js";
+import { subMapEntrances, deumlaut, type SubMapEntrance } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
 import { penetrableEntrances, bySide, type McEntrance, type Side } from "../marcopolo/entrances.js";
 interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
@@ -46,24 +46,26 @@ function footprintOf(grid: GridMap, targetSlug: string): { tiles: Set<string>; b
   return tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
 }
 
-/** Place an entrance just OUTSIDE the gif footprint on `side`, at the position
- *  marcopolo records for it. The overworld marcopolo map draws every g-wald entrance
- *  at a precise cell; normalising that cell within marcopolo's own entrance-cluster
- *  bbox and re-projecting onto the gif footprint bbox (a LOCAL affine, forest→forest)
- *  reproduces where the entrance actually sits along the edge — WITHOUT relying on a
- *  global marco↔gif alignment, which does not hold (the two overworlds are offset and
- *  differently drawn). Only the axis along the edge is mapped (W/E: row; N/S: col);
- *  the cross-axis is pinned one tile off the footprint. Snapped to a walkable,
- *  non-footprint tile. */
-function placeByMarco(grid: GridMap, fp: Bbox, mc: Bbox, side: Side, e: McEntrance): [number, number] | null {
-  const lerp = (v: number, lo: number, hi: number, Lo: number, Hi: number) =>
-    hi <= lo ? (Lo + Hi) / 2 : Lo + ((v - lo) / (hi - lo)) * (Hi - Lo);
+/** Place an entrance just OUTSIDE the gif footprint on `side`, at the FRACTIONAL
+ *  position the wiki sub-map records for it. The wiki ascii sub-map is the
+ *  authoritative schematic for WHERE along an edge each entrance sits: take the
+ *  entrance room's position as a fraction of the whole sub-map's extent along the
+ *  edge axis (W/E → row within [mapR0,mapR1]; N/S → col within [mapC0,mapC1]) and
+ *  re-project it onto the gif footprint's edge span, then step one tile off the
+ *  footprint on `side`. This keeps entrances off the footprint CORNERS (a corner is
+ *  never a straight crossing) and needs no marco↔gif coordinate alignment, which does
+ *  not hold. marcopolo supplies which sides are penetrable + the straight direction;
+ *  the wiki supplies the along-edge position. Snapped to a walkable, non-footprint tile. */
+function placeByWikiFrac(grid: GridMap, fp: Bbox, side: Side, e: SubMapEntrance): [number, number] | null {
+  const frac = (v: number, lo: number, hi: number) => (hi <= lo ? 0.5 : (v - lo) / (hi - lo));
   let c: number, r: number;
   if (side === "W" || side === "E") {
-    r = Math.round(lerp(e.row, mc.minR, mc.maxR, fp.minR, fp.maxR));
+    const f = frac(e.r, e.mapR0, e.mapR1);
+    r = Math.round(fp.minR + f * (fp.maxR - fp.minR));
     c = side === "W" ? fp.minC - 1 : fp.maxC + 1;
   } else {
-    c = Math.round(lerp(e.col, mc.minC, mc.maxC, fp.minC, fp.maxC));
+    const f = frac(e.c, e.mapC0, e.mapC1);
+    c = Math.round(fp.minC + f * (fp.maxC - fp.minC));
     r = side === "N" ? fp.minR - 1 : fp.maxR + 1;
   }
   return snapFree(grid, c, r);
@@ -153,38 +155,47 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     const targetFile = path.join(kbDir, `${gw.target}.md`);
     if (!existsSync(targetFile)) continue;
     const wikiEnt = subMapEntrances(await readFile(targetFile, "utf8"), regionSlug);
-    if (wikiEnt.length < 2) continue; // needs a real edge-room set to distribute
-    // Identify the marcopolo overworld cluster for THIS sub-map by ENTRANCE-COUNT
-    // PROFILE: the wiki sub-map and its true marcopolo counterpart mark the same
-    // real entrances, so their per-side counts agree. Proximity alone fails —
-    // nearby single-tile clusters (a Römerlager) can map closer than the wald's
-    // own centroid. Score = side-count mismatch first, affine distance as tiebreak.
+    if (wikiEnt.length < 1) continue; // needs at least one region-linked edge room
+    // Identify the marcopolo overworld cluster for THIS sub-map. marcopolo is the
+    // AUTHORITY for which/how-many entrances are real: the wiki often OVER-marks (the
+    // village draws 8 `G` back-link cells but only 2 — mid-N + mid-S — are true
+    // crossings, exactly what marcopolo lists). So a wrong sub-map is ruled out by (a)
+    // marcopolo having an entrance side the wiki can't cover AND (b) affine proximity
+    // of the two overworld clusters. Wiki EXCESS on a side is NOT penalised.
     const wSide = bySideWiki(wikiEnt);
-    const [gcx, gcy] = [gw.col, gw.row];
+    // Reference point for the affine proximity test = the sub-map's FOOTPRINT centre
+    // (the whole area), not the single gateway POINT — the point sits at one imagemap
+    // rect and can be several tiles off the area's centroid, which would fail a tight
+    // gate. Falls back to the gateway point when there is no footprint.
+    const fp = footprintOf(grid, normSlug(gw.target));
+    const [gcx, gcy] = fp
+      ? [(fp.bbox.minC + fp.bbox.maxC) / 2, (fp.bbox.minR + fp.bbox.maxR) / 2]
+      : [gw.col, gw.row];
     const subPages = [...new Set(mcCells.map((c) => normSlug(c.page)))].filter((p) => p !== regionSlug);
     let best: McEntrance[] | null = null, bestScore = Infinity;
     for (const pageBase of subPages) {
       const ent = penetrableEntrances(over, pageBase);
       if (!ent.length) continue;
       const m = bySide(ent);
-      const mismatch = (["N", "E", "S", "W"] as Side[]).reduce((s, k) => s + Math.abs(wSide[k].length - m[k].length), 0);
+      // Uncoverable = a marco entrance the wiki has no edge room for on that side.
+      const uncoverable = (["N", "E", "S", "W"] as Side[]).reduce((s, k) => s + Math.max(0, m[k].length - wSide[k].length), 0);
       const cx = ent.reduce((s, e) => s + e.col, 0) / ent.length;
       const cy = ent.reduce((s, e) => s + e.row, 0) / ent.length;
       const [mx, my] = apply(affine, [cx, cy]);
-      const score = mismatch * 1000 + Math.hypot(mx - gcx, my - gcy);
+      const score = uncoverable * 1000 + Math.hypot(mx - gcx, my - gcy);
       if (score < bestScore) { bestScore = score; best = ent; }
     }
-    // Only inject on a confident profile match (allow ±2 total for river/corner
-    // noise); otherwise leave the original single gateway untouched.
-    if (!best || bestScore >= 3000) continue;
+    // Confident match only: the wiki must cover every marco entrance (uncoverable 0)
+    // AND the two overworld clusters must land on nearly the same gif tile (a tight
+    // affine proximity), which rejects a sub-map that has no real marcopolo counterpart.
+    if (!best || bestScore >= 4) continue;
     // The sub-map's overworld FOOTPRINT comes straight from the gif's own imagemap
     // (the whole-region rects buildGridMap discards). Mark it impassable so the
-    // router can't cut STRAIGHT THROUGH the forest — the gif paints it as walkable
-    // grass, which is exactly why routes used to "enter" on an interior, impenetrable
-    // tile. With the body blocked, the router must reach a real EDGE, and each edge
-    // carries the matching wiki `1 Rand` entrance. When the gif marks no footprint
+    // router can't cut STRAIGHT THROUGH the forest/village — the gif paints it as
+    // walkable grass, which is exactly why routes used to "enter" on an interior,
+    // impenetrable tile. With the body blocked, the router must reach a real EDGE, and
+    // each edge carries the matching wiki entrance. When the gif marks no footprint
     // (an ordinary point gateway), fall back to placing relative to the point.
-    const fp = footprintOf(grid, normSlug(gw.target));
     if (fp) {
       grid.blocked ??= Array.from({ length: grid.rows }, () => new Array<boolean>(grid.cols).fill(false));
       for (const k of fp.tiles) { const [r, c] = k.split(",").map(Number); grid.blocked[r][c] = true; }
@@ -194,19 +205,17 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // sits just west of the forest, so the router approaching from the west (e.g.
     // the harbour) reaches it first and enters the matching `1 Rand` room.
     const mSide = bySide(best);
-    // marcopolo's own entrance-cluster bounding box — the reference frame the
-    // per-entrance cell positions are normalised against before re-projecting onto
-    // the gif footprint (see placeByMarco).
-    const mcB: Bbox = {
-      minC: Math.min(...best.map((e) => e.col)), maxC: Math.max(...best.map((e) => e.col)),
-      minR: Math.min(...best.map((e) => e.row)), maxR: Math.max(...best.map((e) => e.row)),
-    };
     let injected = 0;
     for (const s of ["N", "E", "S", "W"] as Side[]) {
-      const ws = wSide[s], ms = mSide[s];
-      const n = Math.min(ws.length, ms.length); // only marco-confirmed penetrable
+      const ms = mSide[s];
+      // marcopolo is authoritative for HOW MANY entrances this side really has; when
+      // the wiki over-marks (more back-link rooms than real crossings), keep only the
+      // marco-count many, centred along the side (so the village's mid-N/mid-S `G` win
+      // over its corner `G` cells).
+      const ws = pickCentered(wSide[s], ms.length);
+      const n = ws.length; // == min(marco, wiki), only marco-confirmed penetrable
       for (let i = 0; i < n; i++) {
-        const tile = fp ? placeByMarco(grid, fp.bbox, mcB, s, ms[i]) : placeOnSide(grid, gw.col, gw.row, s, i, n);
+        const tile = fp ? placeByWikiFrac(grid, fp.bbox, s, ws[i]) : placeOnSide(grid, gw.col, gw.row, s, i, n);
         if (!tile) continue;
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,
@@ -241,8 +250,21 @@ function placeOnSide(grid: GridMap, ax: number, ay: number, side: Side, i: numbe
   return snap(grid, c, r);
 }
 
-function bySideWiki(ent: { side: Side; ordinal: number; name: string | null; r: number; c: number }[]) {
-  const g: Record<Side, typeof ent> = { N: [], E: [], S: [], W: [] };
+/** Keep `n` items from `arr`, evenly spaced and centred (n=1 → the middle item),
+ *  used when marcopolo says a side has fewer real entrances than the wiki marks. */
+function pickCentered<T>(arr: T[], n: number): T[] {
+  if (n >= arr.length) return arr;
+  if (n <= 0) return [];
+  const out: T[] = [];
+  for (let i = 0; i < n; i++) {
+    const idx = Math.round(((i + 1) * arr.length) / (n + 1) - 0.5);
+    out.push(arr[Math.min(arr.length - 1, Math.max(0, idx))]);
+  }
+  return out;
+}
+
+function bySideWiki(ent: SubMapEntrance[]) {
+  const g: Record<Side, SubMapEntrance[]> = { N: [], E: [], S: [], W: [] };
   for (const e of ent) g[e.side].push(e);
   for (const s of Object.keys(g) as Side[]) g[s].sort((a, b) => a.ordinal - b.ordinal);
   return g;

@@ -24,6 +24,12 @@ export interface McEntrance {
   side: Side;
   /** 0-based position along the side (N/S ordered by column, E/W by row) */
   ordinal: number;
+  /** The straight connecting-edge direction at this cell (marcopolo's authoritative
+   *  crossing/side signal), or null if the cell has no unique straight edge (e.g. a
+   *  sub-map's outer overlap cell with edges in many directions). On the overworld
+   *  side this equals `side`; it is what makes a crossing STRAIGHT-only (never
+   *  diagonal). */
+  dir: Side | null;
 }
 
 const basename = (p: string) => p.split("/").pop()!.replace(/\.md$/, "");
@@ -51,9 +57,12 @@ export function penetrableEntrances(m: McMap, targetPage: string): McEntrance[] 
     if (dW === min) return "W";
     return "E";
   };
+  // Prefer the straight connecting-edge direction as the side (marcopolo's own
+  // signal — reliable at corners, where bbox-nearest-edge is ambiguous); fall back
+  // to bounding-box position when the cell has no unique straight edge.
   const out: McEntrance[] = portals.map((p) => ({
     label: p.nodeLabel, row: p.row, col: p.col, page: basename(p.page),
-    side: sideOf(p.row, p.col), ordinal: 0,
+    side: p.edgeDir ?? sideOf(p.row, p.col), ordinal: 0, dir: p.edgeDir,
   }));
   for (const s of ["N", "E", "S", "W"] as Side[]) {
     const grp = out.filter((e) => e.side === s)
