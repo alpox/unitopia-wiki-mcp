@@ -56,12 +56,17 @@ function footprintOf(grid: GridMap, targetSlug: string): { tiles: Set<string>; b
  *  footprint so the crossing step is straight. Snapped to a walkable, non-footprint tile. */
 function placeByAffine(grid: GridMap, fp: Bbox, affine: Affine, side: Side, e: McEntrance): [number, number] | null {
   const [gx, gy] = apply(affine, [e.col, e.row]);
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
   let c: number, r: number;
   if (side === "W" || side === "E") {
-    r = Math.round(gy);
+    // Clamp the along-edge row to the footprint's INTERIOR span: an entrance on the
+    // very top/bottom row is at a CORNER, which is not a straight crossing — the router
+    // then has to step diagonally (suedosten/nordosten) onto it. Keeping it one row in
+    // lets the approach cross straight (osten/westen).
+    r = clamp(Math.round(gy), fp.minR + 1, fp.maxR - 1);
     c = side === "W" ? fp.minC - 1 : fp.maxC + 1;
   } else {
-    c = Math.round(gx);
+    c = clamp(Math.round(gx), fp.minC + 1, fp.maxC - 1);
     r = side === "N" ? fp.minR - 1 : fp.maxR + 1;
   }
   return snapFree(grid, c, r);

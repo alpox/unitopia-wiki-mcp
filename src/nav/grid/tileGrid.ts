@@ -79,7 +79,7 @@ export function detectOrigin(rects: ImagemapRect[]): number {
   return best <= 1 ? best : 0; // only 0/1 are plausible; anything else → 0
 }
 
-interface TileInfo { fam: Terrain; roadDirs: Dir[] }
+interface TileInfo { fam: Terrain; roadDirs: Dir[]; base: Terrain }
 
 /** Classify one tile from its pixels: dominant terrain family, plus a road-line
  *  test (a near-black/brown stroke crossing an otherwise-terrain tile) and the
@@ -104,15 +104,16 @@ function classifyTile(gif: DecodedGif, ox: number, oy: number): TileInfo {
   const total = TILE * TILE;
   const oceanFrac = (famCount.get("ocean") ?? 0) / total;
   // A tile that is almost entirely black is open sea / void.
-  if (oceanFrac > 0.85) return { fam: "ocean", roadDirs: [] };
-  // Dominant non-ocean family = terrain.
-  let fam: Terrain = "grass", best = -1;
-  for (const [f, n] of famCount) { if (f === "ocean") continue; if (n > best) { best = n; fam = f; } }
+  if (oceanFrac > 0.85) return { fam: "ocean", roadDirs: [], base: "ocean" };
+  // Dominant non-ocean family = terrain (the BASE, kept so an isolated stroke that is
+  // really a landmark icon — a tree/house sprite with a dark outline, not a road line
+  // — can be reverted to it in the continuity pass).
+  let base: Terrain = "grass", best = -1;
+  for (const [f, n] of famCount) { if (f === "ocean") continue; if (n > best) { best = n; base = f; } }
   // Road-line test: a moderate stroke fraction over terrain (not a solid fill).
   const strokeFrac = stroke / total;
   const roadDirs = strokeFrac > 0.08 && strokeFrac < 0.75 ? strokeDirs(strokeAt) : [];
-  if (roadDirs.length) fam = "road";
-  return { fam, roadDirs };
+  return { fam: roadDirs.length ? "road" : base, roadDirs, base };
 }
 
 /** Which of the 8 directions the stroke pixels touch the tile border in. */
@@ -149,13 +150,25 @@ export function buildGridMap(
   const tiles: Terrain[][] = [];
   const cost: number[][] = [];
   const roadDirs: Dir[][][] = [];
+  const base: Terrain[][] = [];
   for (let tr = 0; tr < rows; tr++) {
-    const tRow: Terrain[] = [], cRow: number[] = [], dRow: Dir[][] = [];
+    const tRow: Terrain[] = [], cRow: number[] = [], dRow: Dir[][] = [], bRow: Terrain[] = [];
     for (let tc = 0; tc < cols; tc++) {
       const info = classifyTile(gif, origin + tc * TILE, origin + tr * TILE);
-      tRow.push(info.fam); cRow.push(COST[info.fam]); dRow.push(info.roadDirs);
+      tRow.push(info.fam); cRow.push(COST[info.fam]); dRow.push(info.roadDirs); bRow.push(info.base);
     }
-    tiles.push(tRow); cost.push(cRow); roadDirs.push(dRow);
+    tiles.push(tRow); cost.push(cRow); roadDirs.push(dRow); base.push(bRow);
+  }
+  // Road continuity: a real road tile connects to the road NETWORK — at least one
+  // neighbour is also a road. An isolated "road" is a landmark icon (a tree/house
+  // sprite whose dark outline tripped the stroke test, e.g. the Eiche von Panoramix);
+  // revert it to its base terrain so the router can't take a phantom-road shortcut
+  // through the sprite.
+  const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (tiles[r][c] !== "road") continue;
+    const linked = DIRS.some(([dr, dc]) => tiles[r + dr]?.[c + dc] === "road");
+    if (!linked) { tiles[r][c] = base[r][c]; cost[r][c] = COST[base[r][c]]; roadDirs[r][c] = []; }
   }
   const gateways: Gateway[] = rects
     .filter((r) => r.x2 - r.x1 <= TILE * 3 && r.y2 - r.y1 <= TILE * 3) // point-ish, not a whole region
