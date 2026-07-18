@@ -920,6 +920,50 @@ export function subMapEntrances(md: string, regionSlug: string): SubMapEntrance[
   return out;
 }
 
+export interface PerimeterRoom {
+  name: string; label: string; r: number; c: number;
+  side: "N" | "E" | "S" | "W";
+  /** Position ALONG the side, normalized 0..1 within the sub-map bbox (N/S by column,
+   *  E/W by row) — lets a marcopolo/overworld crossing on that side pick the wiki edge
+   *  room at the matching position, without relying on the room's NAME. */
+  frac: number;
+  /** How deep toward the outer edge (0 = on the very edge) — a city gate is outermost. */
+  depth: number;
+}
+/** Every EDGE room of a sub-map (the largest group), classified by side and its
+ *  normalized position along that side. Unlike `subMapEntrances` this applies NO
+ *  entrance filter (no region back-link, no name) — it is the structural raw
+ *  material for matching an overworld crossing to the wiki edge room at the same
+ *  side+position, the way the gallischer-wald matches `1 Rand` rooms by (side,
+ *  ordinal). Rooms more than `maxDepth` tiles inside the bbox are dropped. */
+export function perimeterRooms(md: string, maxDepth = 1): PerimeterRoom[] {
+  const conn = connectorGlyphs(md);
+  const groups = splitGroups(md, conn);
+  if (!groups.length) return [];
+  const { nodes } = buildGraph(groups, conn);
+  const byGroup = new Map<number, GNode[]>();
+  for (const n of nodes.values()) (byGroup.get(n.gi) ?? byGroup.set(n.gi, []).get(n.gi)!).push(n);
+  // The main sub-map = the group with the most nodes (a city's stadtplan).
+  let main: GNode[] = [];
+  for (const g of byGroup.values()) if (g.length > main.length) main = g;
+  if (!main.length) return [];
+  const rmin = Math.min(...main.map((n) => n.r)), rmax = Math.max(...main.map((n) => n.r));
+  const cmin = Math.min(...main.map((n) => n.c)), cmax = Math.max(...main.map((n) => n.c));
+  const out: PerimeterRoom[] = [];
+  for (const n of main) {
+    if (!n.name) continue;
+    const dN = n.r - rmin, dS = rmax - n.r, dW = n.c - cmin, dE = cmax - n.c;
+    const depth = Math.min(dN, dS, dW, dE);
+    if (depth > maxDepth) continue;
+    const side = dN === depth ? "N" : dS === depth ? "S" : dW === depth ? "W" : "E";
+    const frac = side === "N" || side === "S"
+      ? (cmax > cmin ? (n.c - cmin) / (cmax - cmin) : 0.5)
+      : (rmax > rmin ? (n.r - rmin) / (rmax - rmin) : 0.5);
+    out.push({ name: n.name, label: n.label ?? "", r: n.r, c: n.c, side, frac, depth });
+  }
+  return out;
+}
+
 /** List the labelled rooms on a page (for the nav room index). Sub-map anchors a
  *  room links to (e.g. room 13's "[Ruine](#Trabantenstadt)") are alternate names
  *  for that same room, so they are emitted as aliases — this lets a query for the

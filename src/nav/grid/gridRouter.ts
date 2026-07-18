@@ -49,7 +49,13 @@ export function resolveTile(g: GridMap, q: string): { col: number; row: number; 
     let score = 0;
     if (label === ql) score = 5;
     else if (label.includes(ql) || ql.includes(label)) score = 3;
-    if (tgt && (tgt === ql || ql.includes(tgt) || tgt.includes(ql))) score = Math.max(score, 4);
+    // An EXACT target-page match is as authoritative as an exact label: a gateway
+    // whose target IS the queried city is its entrance. This matters once a city's
+    // single "Lutetia" point gateway is replaced by per-side "Lutetia (Westrand 1)"
+    // entrances — the bare label no longer scores 5, but the exact target still does,
+    // so "Lutetia" still resolves to an entrance rather than tying with the harbour.
+    if (tgt && tgt === ql) score = Math.max(score, 5);
+    else if (tgt && (ql.includes(tgt) || tgt.includes(ql))) score = Math.max(score, 4);
     if (score > bestScore) { bestScore = score; best = { col: gw.col, row: gw.row, name: gw.label }; }
   }
   if (best) return best;

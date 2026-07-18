@@ -15,6 +15,26 @@ import { crossPortals } from "./graph.js";
 
 export type Side = "N" | "E" | "S" | "W";
 
+/** Distinctive name tokens of a sub-map's LAND border-gate rooms — the rooms whose
+ *  marcopolo legend links BACK to the overworld region (a real crossing) and that
+ *  are NOT water. For a city these are its gates (Lutetia's `T` = "Stadttor"). Two
+ *  uses: (1) a non-empty result CONFIRMS the sub-map is a real crossable city (a land
+ *  border-exit exists); (2) the tokens break a near-tie when position alone can't pick
+ *  the wiki gate room. Water crossings (a river/Seine `S`) are dropped: a city is
+ *  entered by road, not across water, so a water bank is never a road entrance. See
+ *  [[overworld-ascii-entrance-seam]]. */
+export function borderGateTokens(sub: McMap, region: string): string[] {
+  const WATER = /(fluss|fluß|wasser|\bsee\b|meer|bach|seine|ozean|teich|sumpf|hafen)/i;
+  const out = new Set<string>();
+  for (const e of sub.legend) {
+    if (!e.pages.includes(region)) continue; // links back to the overworld = a crossing
+    const desc = e.desc.replace(/\(.*$/, "").trim(); // drop the "(Nördliches Gallien)" qualifier
+    if (!desc || WATER.test(e.desc) || e.color === "0000FF") continue; // water is not a road gate
+    for (const tok of desc.toLowerCase().split(/[^a-zäöüß]+/)) if (tok.length >= 5) out.add(tok);
+  }
+  return [...out];
+}
+
 export interface McEntrance {
   label: string;
   row: number;

@@ -190,6 +190,32 @@ test("entranceGateways: blocks the village footprint and injects its mid-N/mid-S
   assert.ok((grid.blocked ?? []).some((row) => row.some(Boolean)), "village footprint marked blocked");
 });
 
+test("entranceGateways: a road-entered CITY gets a gateway per road crossing into the right gate room (if artifacts built)", async (t) => {
+  const gridFile = join(config.kbDir, "_gridmaps", "gallien.json");
+  const marco = join(config.kbDir, "_marcopolo", "gallien", "lutetia.md");
+  if (!existsSync(gridFile) || !existsSync(marco)) { t.skip("gallien/lutetia artifacts not present"); return; }
+  const grid = JSON.parse(readFileSync(gridFile, "utf8")) as GridMap;
+  const gws = await entranceGateways(grid, config.kbDir);
+  // Lutetia's ascii gates ("1 Stadttor") have no region back-link, so the forest
+  // mechanism can't see them. It is a CITY entered by road: the gif road crosses the
+  // footprint W and E, so exactly two entrances are injected — the WEST crossing
+  // pinned (by side+position, not name) to the WEST "Stadttor" and the EAST crossing
+  // to the EAST one — while the original point gateways are superseded.
+  const lu = gws.filter((g) => g.target === "lutetia" && /rand/i.test(g.label));
+  assert.equal(lu.length, 2, "2 injected road entrances (W, E)");
+  assert.ok(!gws.some((g) => g.target === "lutetia" && !/rand/i.test(g.label)), "original point gateways superseded");
+  const west = lu.find((g) => /Westrand/.test(g.label)), east = lu.find((g) => /Ostrand/.test(g.label));
+  assert.ok(west && east, "one west, one east gateway");
+  // Both enter a "Stadttor" room, but DISTINCT ones (the west gate ≠ the east gate),
+  // each coord-pinned so the router does not confuse the two identically-named rooms.
+  assert.ok(/^Stadttor@\d+,\d+$/.test(west!.entry ?? ""), "west enters a coord-pinned Stadttor");
+  assert.ok(/^Stadttor@\d+,\d+$/.test(east!.entry ?? ""), "east enters a coord-pinned Stadttor");
+  assert.notEqual(west!.entry, east!.entry, "west and east are different Stadttor rooms");
+  // The harbour tile that the footprint overlaps stays walkable (not stranded).
+  const harbour = grid.gateways.find((g) => g.target === "kompass-lutetia");
+  if (harbour) assert.ok(!grid.blocked?.[harbour.row]?.[harbour.col], "overlapping harbour tile kept walkable");
+});
+
 test("entranceGateways: leaves gateways unchanged when a region has no marcopolo data", async (t) => {
   const gridFile = join(config.kbDir, "_gridmaps", "asia.json");
   if (!existsSync(gridFile)) { t.skip("asia grid artifact not present"); return; }

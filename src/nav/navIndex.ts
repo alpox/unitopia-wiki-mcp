@@ -645,24 +645,22 @@ export class NavIndex {
     const depth = new Map<string, number>();
     const q: string[] = [];
     for (const s of starts) { prev.set(s, null); depth.set(s, 1); q.push(s); }
-    let goal: string | null = null;
+    // Collect the reachable dest pages in BFS (page-distance) order rather than
+    // committing to the first — a generic room name ("Stadttor") sits on several
+    // cities, and the nearest one's stitch may not connect (wrong sub-map, blocked
+    // approach). Trying the next-nearest keeps such ambiguous routes working instead
+    // of dead-ending on an arbitrary first hit. Bounded so a very common name doesn't
+    // explode the work.
+    const goals: string[] = [];
     while (q.length) {
       const cur = q.shift()!;
-      if (dests.has(cur) && !starts.has(cur)) { goal = cur; break; }
+      if (dests.has(cur) && !starts.has(cur)) { goals.push(cur); if (goals.length >= 6) break; continue; }
       if ((depth.get(cur) ?? 0) >= maxPages) continue;
       for (const e of this.pageEdges!.get(cur) ?? []) {
         if (!prev.has(e.to)) { prev.set(e.to, { from: cur, edge: e }); depth.set(e.to, (depth.get(cur) ?? 0) + 1); q.push(e.to); }
       }
     }
-    if (!goal) return { ok: false };
-    // Reconstruct the page chain: [{P0}, {P1,edge0}, …]; edge_i connects P_{i-1}→P_i.
-    const chain: { page: string; edge?: PageEdge }[] = [];
-    let cur: string | null = goal;
-    while (cur !== null) {
-      const link: { from: string; edge: PageEdge } | null = prev.get(cur) ?? null;
-      chain.unshift({ page: cur, edge: link?.edge });
-      cur = link ? link.from : null;
-    }
+    if (!goals.length) return { ok: false };
     // Stitch per-page legs. The destination page often has several disconnected
     // ASCII sub-maps, and BFS records only ONE entry edge into it — which may
     // land on the wrong sub-map. So try EVERY edge from the penultimate page
@@ -674,7 +672,7 @@ export class NavIndex {
       const name = slug.split("/").pop()!.replace(/-/g, " ");
       return this.gridByPage.has(slug) ? `Überlandkarte ${name}` : name;
     };
-    const stitch = async (edges: (PageEdge | undefined)[]): Promise<RouteResult | null> => {
+    const stitch = async (chain: { page: string; edge?: PageEdge }[], edges: (PageEdge | undefined)[]): Promise<RouteResult | null> => {
       const steps: RouteStep[] = [];
       const asciiParts: string[] = [];
       for (let i = 0; i < chain.length; i++) {
@@ -708,23 +706,35 @@ export class NavIndex {
       const clear = steps.every((x) => !x.hidden && (x.dir || x.transition));
       return { ok: true, from: fromQ, to: toQ, steps, clear, ascii: asciiParts.join("\n\n") };
     };
-    const baseEdges = chain.map((c) => c.edge);
-    const finalSeams = chain.length > 1
-      ? (this.pageEdges!.get(chain[chain.length - 2].page) ?? []).filter((e) => e.to === goal)
-      : [];
-    const tries = finalSeams.length ? finalSeams : [baseEdges[baseEdges.length - 1]];
-    // Several seams can lead into the goal page (e.g. one synthesized gateway per
-    // real forest entrance). Each enters at a FIXED room, but the grid leg to that
-    // gateway and the sub-map leg from it differ — so keep the CHEAPEST connecting
-    // stitch (fewest steps), i.e. the entrance that yields the fastest whole route,
-    // not merely the first that connects.
     const cost = (r: RouteResult) => (r.steps ?? []).filter((s) => s.dir || s.transition).length;
-    let bestRes: RouteResult | null = null;
-    for (const fe of tries) {
-      const res = await stitch([...baseEdges.slice(0, -1), fe]);
-      if (res && (!bestRes || cost(res) < cost(bestRes))) bestRes = res;
+    // Try each reachable goal (nearest first); return the first that actually stitches.
+    for (const goal of goals) {
+      // Reconstruct the page chain: [{P0}, {P1,edge0}, …]; edge_i connects P_{i-1}→P_i.
+      const chain: { page: string; edge?: PageEdge }[] = [];
+      let cur: string | null = goal;
+      while (cur !== null) {
+        const link: { from: string; edge: PageEdge } | null = prev.get(cur) ?? null;
+        chain.unshift({ page: cur, edge: link?.edge });
+        cur = link ? link.from : null;
+      }
+      const baseEdges = chain.map((c) => c.edge);
+      // Several seams can lead into the goal page (e.g. one synthesized gateway per
+      // real forest entrance). Each enters at a FIXED room, but the grid leg to that
+      // gateway and the sub-map leg from it differ — so keep the CHEAPEST connecting
+      // stitch (fewest steps), i.e. the entrance that yields the fastest whole route,
+      // not merely the first that connects.
+      const finalSeams = chain.length > 1
+        ? (this.pageEdges!.get(chain[chain.length - 2].page) ?? []).filter((e) => e.to === goal)
+        : [];
+      const tries = finalSeams.length ? finalSeams : [baseEdges[baseEdges.length - 1]];
+      let bestRes: RouteResult | null = null;
+      for (const fe of tries) {
+        const res = await stitch(chain, [...baseEdges.slice(0, -1), fe]);
+        if (res && (!bestRes || cost(res) < cost(bestRes))) bestRes = res;
+      }
+      if (bestRes) return bestRes;
     }
-    return bestRes ?? { ok: false };
+    return { ok: false };
   }
 
   /** The slug of `name` if it names a map page (its own area, e.g. "Borsippa"),

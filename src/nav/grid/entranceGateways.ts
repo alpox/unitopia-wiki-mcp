@@ -21,9 +21,9 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { GridMap, Gateway } from "./types.js";
-import { subMapEntrances, deumlaut, type SubMapEntrance } from "../mapGraph.js";
+import { subMapEntrances, perimeterRooms, deumlaut, type SubMapEntrance, type PerimeterRoom } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
-import { penetrableEntrances, bySide, type McEntrance, type Side } from "../marcopolo/entrances.js";
+import { penetrableEntrances, bySide, borderGateTokens, type McEntrance, type Side } from "../marcopolo/entrances.js";
 interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
 
 /** The overworld footprint of a sub-map, read from the BAKED `grid.subMaps` (the
@@ -32,8 +32,14 @@ interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
  *  the blocked ASCII-map body the gif paints as walkable grass. Returns null when the
  *  sub-map has no footprint (an ordinary point gateway — a city — has nothing to
  *  block). */
-function footprintOf(grid: GridMap, targetSlug: string): { tiles: Set<string>; bbox: Bbox } | null {
-  const sm = grid.subMaps?.find((s) => normSlug(s.target) === targetSlug);
+function footprintOf(grid: GridMap, target: string): { tiles: Set<string>; bbox: Bbox } | null {
+  // Match the sub-map by EXACT last path segment first: `normSlug` strips a
+  // `kompass-` prefix, so `lutetia` and its harbour-compass twin `kompass-lutetia`
+  // both normalise to "lutetia" and collide — blocking the wrong (tiny) footprint.
+  // The exact-slug match keeps them apart; normSlug is only a fallback.
+  const t = lastSeg(target).replace(/\.md$/, "");
+  const sm = grid.subMaps?.find((s) => lastSeg(s.target).replace(/\.md$/, "") === t)
+    ?? grid.subMaps?.find((s) => normSlug(s.target) === normSlug(target));
   if (!sm) return null;
   const tiles = new Set<string>();
   let minC = Infinity, maxC = -Infinity, minR = Infinity, maxR = -Infinity;
@@ -128,6 +134,123 @@ function snap(grid: GridMap, col: number, row: number, maxR = 4, avoidBlocked = 
 /** Snap avoiding both ocean and the blocked footprint. */
 const snapFree = (grid: GridMap, col: number, row: number): [number, number] | null => snap(grid, col, row, 4, true);
 
+/** Road tiles just OUTSIDE a sub-map footprint whose inward orthogonal neighbour is
+ *  a footprint tile ALSO on a road — a road that genuinely crosses the boundary. A
+ *  CITY (unlike a forest) is entered by road, so these crossings are its gates. Each
+ *  is tagged with the footprint side it sits on; a run of adjacent crossing tiles on
+ *  one side (a wide road) collapses to its middle tile so one road ≠ several gates. */
+function roadCrossings(grid: GridMap, fp: { tiles: Set<string>; bbox: Bbox }): { side: Side; col: number; row: number }[] {
+  const isRoad = (r: number, c: number) => grid.tiles[r]?.[c] === "road";
+  const inFp = (r: number, c: number) => fp.tiles.has(`${r},${c}`);
+  const { minC, maxC, minR, maxR } = fp.bbox;
+  const raw: { side: Side; col: number; row: number }[] = [];
+  for (let r = minR - 1; r <= maxR + 1; r++)
+    for (let c = minC - 1; c <= maxC + 1; c++) {
+      if (inFp(r, c) || !isRoad(r, c)) continue;
+      for (const [dr, dc] of [[0, -1], [0, 1], [-1, 0], [1, 0]] as const) {
+        if (!inFp(r + dr, c + dc) || !isRoad(r + dr, c + dc)) continue;
+        // The inside neighbour lies opposite the side the outside tile sits on.
+        const side: Side = dc === 1 ? "W" : dc === -1 ? "E" : dr === 1 ? "N" : "S";
+        raw.push({ side, col: c, row: r });
+        break;
+      }
+    }
+  // Collapse a contiguous run along one side (a wide road) into its middle tile.
+  const out: { side: Side; col: number; row: number }[] = [];
+  const bySideCr = new Map<Side, { side: Side; col: number; row: number }[]>();
+  for (const x of raw) (bySideCr.get(x.side) ?? bySideCr.set(x.side, []).get(x.side)!).push(x);
+  for (const [side, tiles] of bySideCr) {
+    const axis = (t: { col: number; row: number }) => (side === "W" || side === "E" ? t.row : t.col);
+    tiles.sort((a, b) => axis(a) - axis(b));
+    let cluster = [tiles[0]];
+    const flush = () => out.push(cluster[Math.floor(cluster.length / 2)]);
+    for (let i = 1; i < tiles.length; i++) {
+      if (axis(tiles[i]) - axis(tiles[i - 1]) <= 1) cluster.push(tiles[i]);
+      else { flush(); cluster = [tiles[i]]; }
+    }
+    flush();
+  }
+  return out;
+}
+
+/** Entrance gateways for a CITY sub-map (a footprint entered by ROAD, not the forest's
+ *  marco-positioned edges). Pipeline, all structural bar the last tiebreak:
+ *   1. footprint from the gif imagemap;
+ *   2. the gif ROAD-crossings of that footprint = the entrance tiles + their side;
+ *   3. the marcopolo sub-map's border-exit legend — cells that LINK BACK to the region
+ *      (`T,S → Gallien`) — confirms this is a real crossable city and, dropping water
+ *      (Seine `S`), yields the land-gate NAME tokens ("Stadttor") used only as a tiebreak;
+ *   4. the wiki entry room per crossing = the sub-map's PERIMETER room on that side whose
+ *      position along the edge best matches the crossing's (side+ordinal, like the
+ *      gallischer-wald `1 Rand` match) — NOT its name; a name-token hit only breaks a
+ *      near-tie, since repeated labels (`W`/`Wald-3`) make names unreliable in general.
+ *  Then block the footprint so the router can't cut through the city the gif paints as
+ *  walkable grass. Returns [] (blocks nothing) when it is not a road-entered city.
+ *  See [[overworld-ascii-entrance-seam]]. */
+async function cityGateways(grid: GridMap, kbDir: string, mcOver: string, regionSlug: string, gw: Gateway): Promise<Gateway[]> {
+  if (!gw.target) return [];
+  const fp = footprintOf(grid, gw.target);
+  if (!fp) return [];
+  const crossings = roadCrossings(grid, fp);
+  if (!crossings.length) return [];
+  const subFile = path.join(path.dirname(mcOver), `${lastSeg(gw.target)}.md`);
+  if (!existsSync(subFile)) return [];
+  const sub = parseMcOkf(await readFile(subFile, "utf8"), grid.region, lastSeg(gw.target));
+  // marcopolo confirms a real land gate exists (a border-exit that links back to the
+  // region and is not water); its name tokens are kept only as a tiebreak.
+  const tokens = borderGateTokens(sub, lastSeg(mcOver).replace(/\.md$/, ""));
+  if (!tokens.length) return [];
+  const perim = perimeterRooms(await readFile(path.join(kbDir, `${gw.target}.md`), "utf8"));
+  if (!perim.length) return [];
+  const nameHit = (n: string) => tokens.some((t) => deumlaut(n).toLowerCase().includes(t));
+  // The wiki edge room whose along-edge position best matches the crossing's; a name
+  // hit only shifts a near-tie (0.12 ≈ a couple of rooms' spacing), never overriding a
+  // clearly-closer room.
+  const gateRoomFor = (side: Side, crossFrac: number): PerimeterRoom | null => {
+    const cand = perim.filter((p) => p.side === side);
+    if (!cand.length) return null;
+    let best: PerimeterRoom | null = null, bestScore = Infinity;
+    for (const p of cand) {
+      const score = Math.abs(p.frac - crossFrac) - (nameHit(p.name) ? 0.12 : 0);
+      if (score < bestScore) { bestScore = score; best = p; }
+    }
+    return best;
+  };
+  // Block the footprint: the gif paints the city as walkable grass, so an unblocked
+  // route would cut straight through (and enter on a diagonal interior tile). Blocked,
+  // the router must reach a road crossing — a real gate. But a city footprint often
+  // OVERLAPS a neighbouring gateway (Lutetia's rect covers the "Hafen Lutetia" harbour
+  // tile); blocking that tile would strand the harbour, so keep any tile occupied by a
+  // gateway to a DIFFERENT target walkable.
+  const keep = new Set(grid.gateways.filter((g) => g.target && g.target !== gw.target).map((g) => `${g.row},${g.col}`));
+  grid.blocked ??= Array.from({ length: grid.rows }, () => new Array<boolean>(grid.cols).fill(false));
+  for (const k of fp.tiles) { if (keep.has(k)) continue; const [r, c] = k.split(",").map(Number); grid.blocked[r][c] = true; }
+  const frac = (v: number, lo: number, hi: number) => (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+  const out: Gateway[] = [];
+  const usedRoom = new Set<string>();
+  const bySideCross = new Map<Side, { side: Side; col: number; row: number }[]>();
+  for (const x of crossings) (bySideCross.get(x.side) ?? bySideCross.set(x.side, []).get(x.side)!).push(x);
+  for (const s of ["N", "E", "S", "W"] as Side[]) {
+    const cs = (bySideCross.get(s) ?? []).sort((a, b) => (s === "N" || s === "S" ? a.col - b.col : a.row - b.row));
+    let i = 0;
+    for (const t of cs) {
+      // Position of the crossing along its edge, normalised within the footprint bbox —
+      // the same 0..1 axis `perimeterRooms` uses on the wiki sub-map.
+      const cf = s === "W" || s === "E" ? frac(t.row, fp.bbox.minR, fp.bbox.maxR) : frac(t.col, fp.bbox.minC, fp.bbox.maxC);
+      const room = gateRoomFor(s, cf);
+      if (!room) continue;
+      const rk = `${room.r},${room.c}`;
+      if (usedRoom.has(rk)) continue; // two road tiles onto the same gate → one gateway
+      usedRoom.add(rk);
+      out.push({
+        col: t.col, row: t.row, target: gw.target, anchor: null,
+        label: `${gw.label} (${sideName(s)} ${++i})`, entry: `${room.name}@${room.r},${room.c}`,
+      });
+    }
+  }
+  return out;
+}
+
 /** Build entrance gateways for one region grid map (async: reads wiki + marcopolo
  *  from `kbDir`). Returns the region's gateways UNCHANGED when it lacks the data
  *  (no marcopolo overworld or too few shared landmarks). */
@@ -151,12 +274,23 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
 
   const out: Gateway[] = [];
   const supersede = new Set<string>(); // labels of original gateways we replace
+  const processed = new Set<string>(); // targets handled (a city has several point gateways)
   for (const gw of grid.gateways) {
     if (!gw.target || gw.anchor) continue; // only whole-sub-map gateways
     const targetFile = path.join(kbDir, `${gw.target}.md`);
     if (!existsSync(targetFile)) continue;
     const wikiEnt = subMapEntrances(await readFile(targetFile, "utf8"), regionSlug);
-    if (wikiEnt.length < 1) continue; // needs at least one region-linked edge room
+    if (wikiEnt.length < 1) {
+      // No region back-link edge rooms → not a forest. It may still be a CITY entered
+      // by road (Lutetia): block its footprint and enter via the gif road crossings.
+      // A city has several identical point gateways, so process the target once.
+      if (!processed.has(gw.target)) {
+        processed.add(gw.target);
+        const city = await cityGateways(grid, kbDir, mcOver, regionSlug, gw);
+        if (city.length) { out.push(...city); supersede.add(gw.label); }
+      }
+      continue;
+    }
     // Identify the marcopolo overworld cluster for THIS sub-map. marcopolo is the
     // AUTHORITY for which/how-many entrances are real: the wiki often OVER-marks (the
     // village draws 8 `G` back-link cells but only 2 — mid-N + mid-S — are true
@@ -168,7 +302,7 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // (the whole area), not the single gateway POINT — the point sits at one imagemap
     // rect and can be several tiles off the area's centroid, which would fail a tight
     // gate. Falls back to the gateway point when there is no footprint.
-    const fp = footprintOf(grid, normSlug(gw.target));
+    const fp = footprintOf(grid, gw.target);
     const [gcx, gcy] = fp
       ? [(fp.bbox.minC + fp.bbox.maxC) / 2, (fp.bbox.minR + fp.bbox.maxR) / 2]
       : [gw.col, gw.row];
