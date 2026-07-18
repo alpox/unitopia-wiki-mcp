@@ -468,10 +468,29 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
     }
   });
 
+  const normA = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, "");
+  // Two anchors name the same target when they are equal, umlaut-equal, or one is a
+  // ≥4-char prefix of the other — the latter catches wiki TYPOS ("#Stadtpla" for
+  // "#Stadtplan") and loose headings ("#Klosterberg" ⊂ "Klosterberg (Luntayberg)").
+  const anchorMatch = (a: string | undefined, b: string | undefined): boolean => {
+    if (!a || !b) return false;
+    if (a === b || deumlaut(a) === deumlaut(b)) return true;
+    const na = normA(a), nb = normA(b);
+    return na.length >= 4 && nb.length >= 4 && (na.startsWith(nb) || nb.startsWith(na));
+  };
   // bridge sub-maps via anchors
   const entries = (gi: number, fromAnchor: string) => {
-    const back = groupNodes[gi].filter((id) => nodes.get(id)!.anchors?.includes(fromAnchor));
+    // Enter the sub-map at the room that links BACK to the arriving map (the Therme's
+    // "L Breite Prunkstraße → #Stadtpla" ≈ the Stadtplan), matched fuzzily so a typo'd
+    // back-anchor still resolves — else the seam would fall back to an arbitrary
+    // first-drawn room (a Natatio pool) and the route would enter far from the door.
+    const back = groupNodes[gi].filter((id) => nodes.get(id)!.anchors?.some((a) => anchorMatch(a, fromAnchor)));
     if (back.length) return back;
+    // No structural back-link: prefer a room that reads as an entrance/gate, else the
+    // first named room.
+    const isEntrance = (id: string) => /\b(eingang|zugang|tor|pforte|portal|treppe)\b/i.test(deumlaut(nodes.get(id)!.name ?? ""));
+    const gate = groupNodes[gi].find(isEntrance);
+    if (gate) return [gate];
     const named = groupNodes[gi].find((id) => nodes.get(id)!.name);
     return named ? [named] : groupNodes[gi].slice(0, 1);
   };
@@ -485,7 +504,6 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
   // heading "Klosterberg (Luntayberg)". Resolve to a group by exact anchor, then
   // deumlauted equality, then a separator-insensitive prefix (≥4 chars, so a
   // gateway "^ [Klosterberg](#Klosterberg)" still reaches its detail sub-map).
-  const normA = (s: string) => deumlaut(s).replace(/[^a-z0-9]+/g, "");
   const anchorGroup = (anchor: string): number => {
     let gi = groups.findIndex((g) => g.anchor === anchor);
     if (gi < 0) gi = groups.findIndex((g) => g.anchor && deumlaut(g.anchor) === deumlaut(anchor));
