@@ -109,7 +109,7 @@ interface GNode {
   gid: string; gi: number; r: number; c: number; cEnd?: number;
   label: string | null; name: string | null; anchors?: string[];
 }
-export interface RouteStep { dir: string | null; hidden: boolean; transition: string | null; toName: string | null; hint?: string | null; source?: "wiki" | "marcopolo"; }
+export interface RouteStep { dir: string | null; hidden: boolean; transition: string | null; toName: string | null; hint?: string | null; source?: "wiki" | "marcopolo"; wet?: boolean; }
 export interface RouteResult {
   ok: boolean; from?: string; to?: string; steps?: RouteStep[];
   clear?: boolean; ascii?: string; error?: string;

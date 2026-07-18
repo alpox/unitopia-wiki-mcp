@@ -354,11 +354,20 @@ export class NavIndex {
     // Dörrland overworld, not one shortcut). Interior rooms don't match a gateway, so
     // ordinary cross-page routes are unaffected.
     const fg = this.gridGatewayOf(fromQ), tg = this.gridGatewayOf(toQ);
+    // Both endpoints are overworld gateways: walk the gif between them. A city has
+    // several entrance gates, so try every start/gate pairing and keep the best —
+    // fewest water steps first (never swim around the city to a far gate when a road
+    // gate is reachable dry), then fewest steps.
+    let bestGw: RouteResult | null = null, bestGwCost = Infinity;
     for (const a of fg) for (const b of tg) {
       if (a.page !== b.page || (a.col === b.col && a.row === b.row)) continue;
       const r = await this.routeByNames(a.page, `${a.col},${a.row}`, `${b.col},${b.row}`);
-      if (r.ok) return { ...r, from: a.label, to: b.label };
+      if (!r.ok) continue;
+      const wet = (r.steps ?? []).filter((s) => s.wet).length;
+      const c = (r.steps?.length ?? 0) + wet * 100;
+      if (c < bestGwCost) { bestGwCost = c; bestGw = { ...r, from: a.label, to: b.label }; }
     }
+    if (bestGw) return bestGw;
     const fc = this.candidates(fromQ), tc = this.candidates(toQ);
     const hint = tc.hint ?? fc.hint;
     const fm = this.endpointPages(fromQ), tm = this.endpointPages(toQ);
@@ -706,7 +715,13 @@ export class NavIndex {
       const clear = steps.every((x) => !x.hidden && (x.dir || x.transition));
       return { ok: true, from: fromQ, to: toQ, steps, clear, ascii: asciiParts.join("\n\n") };
     };
-    const cost = (r: RouteResult) => (r.steps ?? []).filter((s) => s.dir || s.transition).length;
+    // Prefer the seam whose route stays on land: a water step counts extra so the
+    // router won't swim AROUND a blocked city to reach its far gate (saving a few
+    // in-city steps) when a dry gate is reachable by road. A forced crossing (no dry
+    // alternative) is still taken — the penalty only decides between alternatives.
+    const cost = (r: RouteResult) =>
+      (r.steps ?? []).filter((s) => s.dir || s.transition).length +
+      (r.steps ?? []).reduce((n, s) => n + (s.wet ? 4 : 0), 0);
     // Try each reachable goal (nearest first); return the first that actually stitches.
     for (const goal of goals) {
       // Reconstruct the page chain: [{P0}, {P1,edge0}, …]; edge_i connects P_{i-1}→P_i.

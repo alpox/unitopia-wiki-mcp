@@ -59,6 +59,40 @@ export function resolveTile(g: GridMap, q: string): { col: number; row: number; 
     if (score > bestScore) { bestScore = score; best = { col: gw.col, row: gw.row, name: gw.label }; }
   }
   if (best) return best;
+  return regionAnchor(g, ql, norm);
+}
+
+/** Like `resolveTile` but returns ALL top-scoring gateway tiles — a city with several
+ *  entrance gateways ("Lutetia (Westrand 1)"/"(Ostrand 1)") resolves to every gate, so
+ *  the router can head for the NEAREST rather than an arbitrary first-listed one (which
+ *  can sit across a river). Falls back to the single `resolveTile` result otherwise. */
+export function resolveTiles(g: GridMap, q: string): { col: number; row: number; name: string }[] {
+  const cr = /^\s*(\d+)\s*[,;]\s*(\d+)\s*$/.exec(q);
+  if (cr) return [{ col: +cr[1], row: +cr[2], name: `${cr[1]},${cr[2]}` }];
+  const norm = (s: string) => ` ${deumlaut(s).replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const ql = norm(q);
+  const lastSeg = (p: string) => p.split("/").pop() ?? p;
+  const scored: { col: number; row: number; name: string; score: number }[] = [];
+  for (const gw of g.gateways) {
+    const label = norm(gw.label);
+    const tgt = gw.target ? norm(lastSeg(gw.target)) : "";
+    let score = 0;
+    if (label === ql) score = 5;
+    else if (label.includes(ql) || ql.includes(label)) score = 3;
+    if (tgt && tgt === ql) score = Math.max(score, 5);
+    else if (tgt && (ql.includes(tgt) || tgt.includes(ql))) score = Math.max(score, 4);
+    if (score > 0) scored.push({ col: gw.col, row: gw.row, name: gw.label, score });
+  }
+  const max = Math.max(0, ...scored.map((s) => s.score));
+  const top = scored.filter((s) => s.score === max).map(({ col, row, name }) => ({ col, row, name }));
+  if (top.length) return top;
+  const reg = regionAnchor(g, ql, norm);
+  return reg ? [reg] : [];
+}
+
+/** The generic whole-area anchor: the central, cheapest walkable tile, when a query
+ *  names the region itself rather than a gateway. */
+function regionAnchor(g: GridMap, ql: string, norm: (s: string) => string): { col: number; row: number; name: string } | null {
   const reg = norm(g.region);
   if (reg === ql || ql.includes(reg)) {
     // Central walkable, cheapest tile as a generic anchor for the whole area.
@@ -76,10 +110,14 @@ export function resolveTile(g: GridMap, q: string): { col: number; row: number; 
 
 /** Route between two endpoints on a single grid map. */
 export function routeOnGrid(g: GridMap, fromQ: string, toQ: string): RouteResult {
-  const s = resolveTile(g, fromQ), t = resolveTile(g, toQ);
-  if (!s || !t) return { ok: false, error: `Ort nicht auf der Karte gefunden: ${!s ? fromQ : toQ}` };
-  if (!walkable(g, s.col, s.row) || !walkable(g, t.col, t.row))
-    return { ok: false, error: "Koordinate außerhalb der Karte" };
+  const s = resolveTile(g, fromQ);
+  // The destination may resolve to SEVERAL equally-named gates (a city's per-side
+  // entrances); head for whichever is nearest by land, so the router doesn't swim to
+  // an arbitrary first-listed gate across a river.
+  const targets = resolveTiles(g, toQ).filter((t) => walkable(g, t.col, t.row));
+  if (!s || !targets.length) return { ok: false, error: `Ort nicht auf der Karte gefunden: ${!s ? fromQ : toQ}` };
+  if (!walkable(g, s.col, s.row)) return { ok: false, error: "Koordinate außerhalb der Karte" };
+  const goalAt = new Map(targets.map((t) => [key(t.col, t.row), t.name]));
 
   // Search over (tile, waterRun) states so a long continuous swim can be made
   // deadly while a short crossing stays cheap. The start tile has run 0.
@@ -95,12 +133,18 @@ export function routeOnGrid(g: GridMap, fromQ: string, toQ: string): RouteResult
     const cur = pq.splice(bi, 1)[0];
     if (done.has(cur)) continue; done.add(cur);
     const [cc, cr, run] = cur.split(",").map(Number);
-    if (cc === t.col && cr === t.row) { goalState = cur; break; }
+    if (goalAt.has(key(cc, cr))) { goalState = cur; break; }
     const srcRoad = g.roadDirs[cr][cc];
     for (const d of DIRS) {
       const [dr, dc] = OFF[d];
       const nc = cc + dc, nr = cr + dr;
       if (!walkable(g, nc, nr)) continue;
+      // No diagonal corner-cutting past an impassable tile: a diagonal step that
+      // clips the corner of a blocked sub-map footprint (the solid city body) is not
+      // a real move — you'd have to squeeze between the wall and the far tile. This is
+      // what marcopolo marks `X` around Lutetia; without it the router "swims" a
+      // diagonal between two Seine tiles that share a blocked corner.
+      if (dr !== 0 && dc !== 0 && (g.blocked?.[cr]?.[nc] || g.blocked?.[nr]?.[cc])) continue;
       const wet = WET.has(g.tiles[nr][nc]);
       const newRun = wet ? run + 1 : 0;
       let w = g.cost[nr][nc];
@@ -120,12 +164,17 @@ export function routeOnGrid(g: GridMap, fromQ: string, toQ: string): RouteResult
   path.unshift(t2(cur));
   while (prev.get(cur)) {
     const { from, dir } = prev.get(cur)!;
-    steps.unshift({ dir: COMPASS[dir], hidden: false, transition: null, toName: gwAt.get(t3(cur)) ?? null });
+    const [cc, cr] = t2(cur);
+    // Tag a step that lands on water: crossing a river (e.g. swimming AROUND a
+    // blocked city to reach its far gate) is physically allowed but should lose to
+    // an all-land approach, so the cross-page seam picker can penalise it.
+    steps.unshift({ dir: COMPASS[dir], hidden: false, transition: null, toName: gwAt.get(t3(cur)) ?? null, wet: WET.has(g.tiles[cr][cc]) });
     path.unshift(t2(from));
     cur = from;
   }
+  const [gc, gr] = t2(goalState);
   return {
-    ok: true, from: s.name, to: t.name, steps,
+    ok: true, from: s.name, to: goalAt.get(key(gc, gr)) ?? toQ, steps,
     clear: steps.every((x) => x.dir),
     ascii: renderPath(g, path),
   };
