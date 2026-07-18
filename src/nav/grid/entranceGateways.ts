@@ -200,9 +200,23 @@ async function cityGateways(grid: GridMap, kbDir: string, mcOver: string, region
   // region and is not water); its name tokens are kept only as a tiebreak.
   const tokens = borderGateTokens(sub, lastSeg(mcOver).replace(/\.md$/, ""));
   if (!tokens.length) return [];
-  const perim = perimeterRooms(await readFile(path.join(kbDir, `${gw.target}.md`), "utf8"));
+  // Depth 6 so a room a few tiles behind the boundary (Lutetia's "Brücke", 3 tiles in
+  // from the "Stadttor" gate) is still a candidate for the overlap redirect below.
+  const perim = perimeterRooms(await readFile(path.join(kbDir, `${gw.target}.md`), "utf8"), 6);
   if (!perim.length) return [];
   const nameHit = (n: string) => tokens.some((t) => deumlaut(n).toLowerCase().includes(t));
+  // STRUCTURAL OVERLAP. An overworld map and a sub-map physically SHARE the boundary
+  // tile at an entrance (the "2-tile overlap"): the marcopolo border-exit cell that
+  // links back to the region (Lutetia's `T` = "Stadttor") is that shared tile, and it
+  // appears on BOTH maps. When the wiki draws that overlap tile as its own room (a
+  // `nameHit` on the border-exit tokens), you do NOT stop on it — it is the same place
+  // as the overworld gate you just left; you land on the first genuinely-interior room
+  // one step past it (the "Brücke"), exactly as the gallierwald enters the room past its
+  // shared outer edge. This is the general entrance/overlay rule — matched by the room's
+  // structural correspondence to the marcopolo border-exit, not by any terrain test.
+  const pastOverlap = (gate: PerimeterRoom): PerimeterRoom | null =>
+    perim.filter((p) => p.side === gate.side && Math.abs(p.frac - gate.frac) < 0.06 && p.depth > gate.depth)
+      .sort((a, b) => a.depth - b.depth)[0] ?? null;
   // The wiki edge room whose along-edge position best matches the crossing's; a name
   // hit only shifts a near-tie (0.12 ≈ a couple of rooms' spacing), never overriding a
   // clearly-closer room.
@@ -237,7 +251,12 @@ async function cityGateways(grid: GridMap, kbDir: string, mcOver: string, region
       // Position of the crossing along its edge, normalised within the footprint bbox —
       // the same 0..1 axis `perimeterRooms` uses on the wiki sub-map.
       const cf = s === "W" || s === "E" ? frac(t.row, fp.bbox.minR, fp.bbox.maxR) : frac(t.col, fp.bbox.minC, fp.bbox.maxC);
-      const room = gateRoomFor(s, cf);
+      const gate = gateRoomFor(s, cf);
+      if (!gate) continue;
+      // If the matched room is the shared OVERLAP boundary (it corresponds to the
+      // marcopolo border-exit — a `nameHit`), enter the first interior room past it, not
+      // the overlap tile itself (which is the overworld gate you just crossed from).
+      const room = (nameHit(gate.name) && pastOverlap(gate)) || gate;
       if (!room) continue;
       const rk = `${room.r},${room.c}`;
       if (usedRoom.has(rk)) continue; // two road tiles onto the same gate → one gateway

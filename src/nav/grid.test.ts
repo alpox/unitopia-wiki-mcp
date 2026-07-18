@@ -14,6 +14,7 @@ import { routeOnGrid, resolveTile, renderGridAscii } from "./grid/gridRouter.js"
 import { detectOrigin } from "./grid/tileGrid.js";
 import { parseImagemaps, parseLink } from "./grid/imagemap.js";
 import { entranceGateways } from "./grid/entranceGateways.js";
+import { perimeterRooms } from "./mapGraph.js";
 import { loadNavIndex, buildNavInMemory } from "./navIndex.js";
 import { config } from "../config.js";
 import type { GridMap, Terrain, Dir } from "./grid/types.js";
@@ -196,21 +197,30 @@ test("entranceGateways: a road-entered CITY gets a gateway per road crossing int
   if (!existsSync(gridFile) || !existsSync(marco)) { t.skip("gallien/lutetia artifacts not present"); return; }
   const grid = JSON.parse(readFileSync(gridFile, "utf8")) as GridMap;
   const gws = await entranceGateways(grid, config.kbDir);
-  // Lutetia's ascii gates ("1 Stadttor") have no region back-link, so the forest
-  // mechanism can't see them. It is a CITY entered by road: the gif road crosses the
-  // footprint W and E, so exactly two entrances are injected — the WEST crossing
-  // pinned (by side+position, not name) to the WEST "Stadttor" and the EAST crossing
-  // to the EAST one — while the original point gateways are superseded.
+  // Lutetia's ascii gates have no region back-link, so the forest mechanism can't see
+  // them. It is a CITY entered by road: the gif road crosses the footprint W and E, so
+  // exactly two entrances are injected. Each edge shares its outermost room with the
+  // overworld gate (the structural OVERLAP), so the entry lands on the first interior
+  // room PAST that shared boundary — verified structurally, not by any room name.
   const lu = gws.filter((g) => g.target === "lutetia" && /rand/i.test(g.label));
   assert.equal(lu.length, 2, "2 injected road entrances (W, E)");
   assert.ok(!gws.some((g) => g.target === "lutetia" && !/rand/i.test(g.label)), "original point gateways superseded");
   const west = lu.find((g) => /Westrand/.test(g.label)), east = lu.find((g) => /Ostrand/.test(g.label));
   assert.ok(west && east, "one west, one east gateway");
-  // Both enter a "Stadttor" room, but DISTINCT ones (the west gate ≠ the east gate),
-  // each coord-pinned so the router does not confuse the two identically-named rooms.
-  assert.ok(/^Stadttor@\d+,\d+$/.test(west!.entry ?? ""), "west enters a coord-pinned Stadttor");
-  assert.ok(/^Stadttor@\d+,\d+$/.test(east!.entry ?? ""), "east enters a coord-pinned Stadttor");
-  assert.notEqual(west!.entry, east!.entry, "west and east are different Stadttor rooms");
+  // Each is a coord-pinned room, and the two are DISTINCT (west entrance ≠ east).
+  assert.ok(/@\d+,\d+$/.test(west!.entry ?? ""), `west enters a coord-pinned room, got ${west!.entry}`);
+  assert.ok(/@\d+,\d+$/.test(east!.entry ?? ""), `east enters a coord-pinned room, got ${east!.entry}`);
+  assert.notEqual(west!.entry, east!.entry, "west and east are different rooms");
+  // Structural overlap: the entry is NOT the outermost edge room of its side (that is
+  // the shared overworld gate) — it sits one room deeper in. Re-derive the edge rooms.
+  const perim = perimeterRooms(readFileSync(join(config.kbDir, "lutetia.md"), "utf8"), 6);
+  for (const [g, side] of [[west!, "W"], [east!, "E"]] as const) {
+    const c = Number(g.entry!.match(/@(\d+),(\d+)$/)![2]);
+    const onSide = perim.filter((p) => p.side === side).map((p) => p.c);
+    assert.ok(onSide.length && Math.min(...onSide.map((x) => Math.abs(x - c))) === 0, "entry is a real edge-band room");
+    const extreme = side === "W" ? Math.min(...onSide) : Math.max(...onSide);
+    assert.notEqual(c, extreme, `${side} entry is past the outermost (overlap) gate, not on it`);
+  }
   // The harbour tile that the footprint overlaps stays walkable (not stranded).
   const harbour = grid.gateways.find((g) => g.target === "kompass-lutetia");
   if (harbour) assert.ok(!grid.blocked?.[harbour.row]?.[harbour.col], "overlapping harbour tile kept walkable");
