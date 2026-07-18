@@ -23,8 +23,8 @@ export type Side = "N" | "E" | "S" | "W";
  *  the wiki gate room. Water crossings (a river/Seine `S`) are dropped: a city is
  *  entered by road, not across water, so a water bank is never a road entrance. See
  *  [[overworld-ascii-entrance-seam]]. */
+const WATER = /(fluss|fluß|wasser|\bsee\b|meer|bach|seine|ozean|teich|sumpf|hafen)/i;
 export function borderGateTokens(sub: McMap, region: string): string[] {
-  const WATER = /(fluss|fluß|wasser|\bsee\b|meer|bach|seine|ozean|teich|sumpf|hafen)/i;
   const out = new Set<string>();
   for (const e of sub.legend) {
     if (!e.pages.includes(region)) continue; // links back to the overworld = a crossing
@@ -33,6 +33,57 @@ export function borderGateTokens(sub: McMap, region: string): string[] {
     for (const tok of desc.toLowerCase().split(/[^a-zäöüß]+/)) if (tok.length >= 5) out.add(tok);
   }
   return [...out];
+}
+
+/** The single-char LABELS of a sub-map's LAND border-gate cells (Lutetia's `T`) — a
+ *  border-exit legend entry that links back to the region and is not water. Used to
+ *  locate the matching gate cells on the OVERWORLD (same label). */
+export function landBorderLabels(sub: McMap, region: string): Set<string> {
+  const out = new Set<string>();
+  for (const e of sub.legend) {
+    if (!e.pages.includes(region) || WATER.test(e.desc) || e.color === "0000FF") continue;
+    if (/^\S$/.test(e.label)) out.add(e.label);
+  }
+  return out;
+}
+
+export interface GateDirs { side: Side; row: number; col: number; blockedDirs: string[] }
+const COMPASS8: Record<string, string> = {
+  N: "norden", S: "sueden", E: "osten", W: "westen",
+  NE: "nordosten", NW: "nordwesten", SE: "suedosten", SW: "suedwesten",
+};
+/** For each overworld gate cell of a sub-map (a `landBorderLabels` cell near where the
+ *  overworld links to that sub-map), the compass directions marcopolo's connector glyphs
+ *  DON'T draw — i.e. the moves that are not walkable from that tile. `|`=N/S, `-`=E/W,
+ *  `/`=NE/SW, `\`=NW/SE, `X`=both diagonals; a missing glyph = no edge (e.g. Lutetia's
+ *  east Stadttor has a space at its NE corner → "nordosten" blocked). This is marcopolo's
+ *  EXACT edge set at the entrance, applied to the matching gif gateway tile — no cross-grid
+ *  alignment needed because a compass direction is a compass direction on either map. */
+export function overworldGateDirs(over: McMap, landLabels: Set<string>, subSlug: string): GateDirs[] {
+  if (!landLabels.size) return [];
+  const links = crossPortals(over).filter((p) => basename(p.page) === subSlug);
+  if (!links.length) return [];
+  const cr = links.reduce((s, l) => s + l.row, 0) / links.length;
+  const cc = links.reduce((s, l) => s + l.col, 0) / links.length;
+  const rows = over.ascii.split("\n");
+  const ch = (r: number, c: number) => rows[r]?.[c] ?? " ";
+  const out: GateDirs[] = [];
+  for (let r = 0; r < rows.length; r++) for (let c = 0; c < (rows[r]?.length ?? 0); c++) {
+    if (!landLabels.has(rows[r][c]) || Math.hypot(r - cr, c - cc) > 12) continue;
+    const dr = r - cr, dc = c - cc;
+    const side: Side = Math.abs(dc) >= Math.abs(dr) ? (dc < 0 ? "W" : "E") : (dr < 0 ? "N" : "S");
+    const blocked: string[] = [];
+    if (ch(r - 1, c) !== "|") blocked.push(COMPASS8.N);
+    if (ch(r + 1, c) !== "|") blocked.push(COMPASS8.S);
+    if (ch(r, c - 1) !== "-") blocked.push(COMPASS8.W);
+    if (ch(r, c + 1) !== "-") blocked.push(COMPASS8.E);
+    if (!"/X".includes(ch(r - 1, c + 1))) blocked.push(COMPASS8.NE);
+    if (!"\\X".includes(ch(r - 1, c - 1))) blocked.push(COMPASS8.NW);
+    if (!"/X".includes(ch(r + 1, c - 1))) blocked.push(COMPASS8.SW);
+    if (!"\\X".includes(ch(r + 1, c + 1))) blocked.push(COMPASS8.SE);
+    out.push({ side, row: r, col: c, blockedDirs: blocked });
+  }
+  return out;
 }
 
 export interface McEntrance {

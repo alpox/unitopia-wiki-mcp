@@ -18,6 +18,12 @@ export interface Gateway {
    *  identically-named edge rooms. When set, the seam uses it verbatim instead of
    *  the structural-gate / name-match entry. */
   entry?: string;
+  /** Compass directions the router may NOT leave this tile by — imported from the
+   *  marcopolo overworld's connector glyphs at the matching entrance cell (e.g. Lutetia's
+   *  east Stadttor has no NE connector, so `["nordosten"]`). Marcopolo's exact edges,
+   *  applied only at the entrance tile; no cross-grid alignment needed since a compass
+   *  direction maps directly. */
+  blockedDirs?: string[];
 }
 
 /** Fully parsed overworld map — the shipped, self-contained routing source. */

@@ -224,6 +224,10 @@ test("entranceGateways: a road-entered CITY gets a gateway per road crossing int
   // The harbour tile that the footprint overlaps stays walkable (not stranded).
   const harbour = grid.gateways.find((g) => g.target === "kompass-lutetia");
   if (harbour) assert.ok(!grid.blocked?.[harbour.row]?.[harbour.col], "overlapping harbour tile kept walkable");
+  // marcopolo's exact edges are imported: the east Stadttor draws no NE connector, so the
+  // east gate forbids leaving "nordosten" (the road runs east); likewise the west gate.
+  assert.ok(east!.blockedDirs?.includes("nordosten"), `east gate blocks nordosten (marco edge), got ${JSON.stringify(east!.blockedDirs)}`);
+  assert.ok((west!.blockedDirs?.length ?? 0) > 0, "west gate imports marco edge restrictions");
 });
 
 test("entranceGateways: leaves gateways unchanged when a region has no marcopolo data", async (t) => {

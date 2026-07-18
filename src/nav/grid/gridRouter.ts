@@ -118,6 +118,9 @@ export function routeOnGrid(g: GridMap, fromQ: string, toQ: string): RouteResult
   if (!s || !targets.length) return { ok: false, error: `Ort nicht auf der Karte gefunden: ${!s ? fromQ : toQ}` };
   if (!walkable(g, s.col, s.row)) return { ok: false, error: "Koordinate außerhalb der Karte" };
   const goalAt = new Map(targets.map((t) => [key(t.col, t.row), t.name]));
+  // Per-tile blocked compass directions, from marcopolo's edges at injected entrance gates.
+  const edgeBlock = new Map<string, Set<string>>();
+  for (const gw of g.gateways) if (gw.blockedDirs?.length) edgeBlock.set(key(gw.col, gw.row), new Set(gw.blockedDirs));
 
   // Search over (tile, waterRun) states so a long continuous swim can be made
   // deadly while a short crossing stays cheap. The start tile has run 0.
@@ -139,11 +142,13 @@ export function routeOnGrid(g: GridMap, fromQ: string, toQ: string): RouteResult
       const [dr, dc] = OFF[d];
       const nc = cc + dc, nr = cr + dr;
       if (!walkable(g, nc, nr)) continue;
-      // No diagonal corner-cutting past an impassable tile: a diagonal step that
-      // clips the corner of a blocked sub-map footprint (the solid city body) is not
-      // a real move — you'd have to squeeze between the wall and the far tile. This is
-      // what marcopolo marks `X` around Lutetia; without it the router "swims" a
-      // diagonal between two Seine tiles that share a blocked corner.
+      // marcopolo's EXACT edges at an entrance tile: the gate's connector glyphs say which
+      // moves the road actually makes (e.g. Lutetia's east gate has no NE edge). Applied
+      // by SIDE at the injected gateway tile, so the router leaves a city the way the map
+      // draws it, not on a shortcut diagonal.
+      if (edgeBlock.get(key(cc, cr))?.has(COMPASS[d])) continue;
+      // No diagonal corner-cutting past a blocked footprint: a diagonal step clipping the
+      // corner of the solid city body is not a real move (marcopolo `X`es it).
       if (dr !== 0 && dc !== 0 && (g.blocked?.[cr]?.[nc] || g.blocked?.[nr]?.[cc])) continue;
       const wet = WET.has(g.tiles[nr][nc]);
       const newRun = wet ? run + 1 : 0;

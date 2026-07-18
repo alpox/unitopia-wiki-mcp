@@ -23,7 +23,8 @@ import path from "node:path";
 import type { GridMap, Gateway } from "./types.js";
 import { subMapEntrances, perimeterRooms, deumlaut, type SubMapEntrance, type PerimeterRoom } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
-import { penetrableEntrances, bySide, borderGateTokens, type McEntrance, type Side } from "../marcopolo/entrances.js";
+import { penetrableEntrances, bySide, borderGateTokens, landBorderLabels, overworldGateDirs, type McEntrance, type Side } from "../marcopolo/entrances.js";
+import type { McMap } from "../marcopolo/extract.js";
 interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
 
 /** The overworld footprint of a sub-map, read from the BAKED `grid.subMaps` (the
@@ -187,7 +188,7 @@ function roadCrossings(grid: GridMap, fp: { tiles: Set<string>; bbox: Bbox }): {
  *  Then block the footprint so the router can't cut through the city the gif paints as
  *  walkable grass. Returns [] (blocks nothing) when it is not a road-entered city.
  *  See [[overworld-ascii-entrance-seam]]. */
-async function cityGateways(grid: GridMap, kbDir: string, mcOver: string, regionSlug: string, gw: Gateway): Promise<Gateway[]> {
+async function cityGateways(grid: GridMap, kbDir: string, over: McMap, mcOver: string, regionSlug: string, gw: Gateway): Promise<Gateway[]> {
   if (!gw.target) return [];
   const fp = footprintOf(grid, gw.target);
   if (!fp) return [];
@@ -198,8 +199,14 @@ async function cityGateways(grid: GridMap, kbDir: string, mcOver: string, region
   const sub = parseMcOkf(await readFile(subFile, "utf8"), grid.region, lastSeg(gw.target));
   // marcopolo confirms a real land gate exists (a border-exit that links back to the
   // region and is not water); its name tokens are kept only as a tiebreak.
-  const tokens = borderGateTokens(sub, lastSeg(mcOver).replace(/\.md$/, ""));
+  const region = lastSeg(mcOver).replace(/\.md$/, "");
+  const tokens = borderGateTokens(sub, region);
   if (!tokens.length) return [];
+  // marcopolo's EXACT edges at each overworld gate cell → the moves not walkable from it
+  // (Lutetia's east Stadttor draws no NE connector → "nordosten" blocked). Applied to the
+  // matching gif gateway tile by SIDE, so the router can't leave a gate in a direction the
+  // road doesn't go (no cross-grid alignment: a compass direction maps 1:1).
+  const gateDirs = overworldGateDirs(over, landBorderLabels(sub, region), lastSeg(gw.target));
   // Depth 6 so a room a few tiles behind the boundary (Lutetia's "Brücke", 3 tiles in
   // from the "Stadttor" gate) is still a candidate for the overlap redirect below.
   const perim = perimeterRooms(await readFile(path.join(kbDir, `${gw.target}.md`), "utf8"), 6);
@@ -261,9 +268,11 @@ async function cityGateways(grid: GridMap, kbDir: string, mcOver: string, region
       const rk = `${room.r},${room.c}`;
       if (usedRoom.has(rk)) continue; // two road tiles onto the same gate → one gateway
       usedRoom.add(rk);
+      const gd = gateDirs.find((d) => d.side === s);
       out.push({
         col: t.col, row: t.row, target: gw.target, anchor: null,
         label: `${gw.label} (${sideName(s)} ${++i})`, entry: `${room.name}@${room.r},${room.c}`,
+        ...(gd?.blockedDirs.length ? { blockedDirs: gd.blockedDirs } : {}),
       });
     }
   }
@@ -305,7 +314,7 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
       // A city has several identical point gateways, so process the target once.
       if (!processed.has(gw.target)) {
         processed.add(gw.target);
-        const city = await cityGateways(grid, kbDir, mcOver, regionSlug, gw);
+        const city = await cityGateways(grid, kbDir, over, mcOver, regionSlug, gw);
         if (city.length) { out.push(...city); supersede.add(gw.label); }
       }
       continue;
