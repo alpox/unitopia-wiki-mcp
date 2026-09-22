@@ -105,6 +105,41 @@ Note: common room names ("Steg", "Thronsaal") can still be ambiguous across page
 — that's resolved by the existing LLM disambiguation layer (`routeCandidates`),
 unchanged here.
 
+## Glyph survey (2026-09-22)
+
+A second pass over ~135 map pages (~8100 map rows) compared the glyphs actually
+used with what the parser does. Corrections to the sections above:
+
+- The standard legend (620× on 172 pages) defines only `| - / \ ˄ ˅ ' . ▼ ◄ ► ▲`.
+  `'` is "keine erkennbare Himmelsrichtung", `.` "zur Verlängerung von Wegen"; the
+  dot *crossing* is an undocumented convention. Box-drawing appears on ~12 pages.
+- **Markdown escapes reached the parser.** The crawler's turndown output escapes
+  `_ * [ ] \`` in map rows (`| ___˅` became `| \_\_\_˅`), shifting every later
+  column. `splitGroups` now undoes them (`unescapeRow`); other backslashes are real
+  diagonals. Bold/link markup inside a row (kreta's labyrinth) is reduced to its
+  visible text.
+- **`X` in an `o-o-o` / `|X|X|` mesh is a diagonal crossing**, not a room
+  (handelsweg-borsippa went from 273 components to 2). It stays a room when the
+  legend defines it or a wire ends at it (amerindia `o--X`, mowan `X Schranke`,
+  s-bahn `X` with `|` below).
+- **Legend keys beyond digits/capitals**: lowercase keys (nankea `h Hafentor`,
+  grouped kreta `a,b,c … Schlüssel`) and symbols (`? § $ % & ●`) are rooms where a
+  wire points at them; in a wire-less field (südostdörrland's `●` trapdoors) they
+  are decoration. `˂ ° ◊ # * , @` and `╤╟╢╧` no longer split maps.
+- **One-way arrows are directed**: a path through `►`/`>` is only walked east,
+  `◄`/`<` west, `▲` north, `▼` south ("Kein zurück" / "Nur hinein").
+- `:` keeps blocking: its only documented meanings are Schranke / Vergittert.
+- `isLabelRow` backtracked catastrophically on long capital rows (wagenrennen hung
+  for minutes); fixed.
+
+Corpus effect on the 117 pages parsed before: components 1094 → 732, edges
+19 483 → 20 019, isolated nodes 262 → 312 (mostly the now-parsed römerstraße
+chessboard pieces, which have no wires). 22 more pages are now scanned.
+`npm run audit:maps -- --glyphs` lists glyphs still rejected per page.
+
+Open: legends far below their map don't attach (römerstraße `§ $ % &`), and
+`handelsweg-borsippa` has one row drawn a column off (`\X|X/`), whose `X` stay rooms.
+
 ## Decision
 
 Keep the current wire-tracer. A full layered rewrite + layer index would **not**

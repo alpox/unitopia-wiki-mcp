@@ -10,7 +10,8 @@ let nav: NavIndex;
 before(async () => { nav = (await loadNavIndex()) ?? (await buildNavInMemory()); });
 
 test("cross-page: Tadmor room -> Borsippa room traverses the Handelsweg road map", async () => {
-  const r = await nav.resolveAndRoute("Kathedrale", "Marktplatz");
+  // Names unique to Tadmor / Borsippa ("Kathedrale"/"Marktplatz" also exist in Nankea).
+  const r = await nav.resolveAndRoute("Gerichtshof", "Bürgermeisteramt");
   assert.ok(r.ok, "a route across pages must be found");
   // A map seam is a normal walk, not a separate command, so a clean multi-map trip
   // IS a single copyable command — the maps just overlay as you keep walking.

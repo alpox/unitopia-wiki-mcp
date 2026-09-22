@@ -1,7 +1,10 @@
 /**
  * Offline audit of the ASCII map parser over the whole KB.
  *
- *   npx tsx src/nav/audit.ts [--top=30] [--kb=<dir>] [--json]
+ *   npx tsx src/nav/audit.ts [--top=30] [--kb=<dir>] [--json] [--glyphs]
+ *
+ * `--glyphs` lists, per page, glyphs in wire-bearing rows the parser rejects (each
+ * such row splits a map or is dropped) instead of the health table.
  *
  * Builds the room graph for every map page and reports structural health
  * signals (hidden edges, water/terrain nodes wrongly wired through, isolated
@@ -10,7 +13,7 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { diagnosePage, type PageDiagnostics } from "./mapGraph.js";
+import { diagnosePage, unknownGlyphs, type PageDiagnostics } from "./mapGraph.js";
 import { config } from "../config.js";
 
 const args = process.argv.slice(2);
@@ -20,9 +23,24 @@ const kbDir = opt("kb", config.kbDir);
 const top = Number(opt("top", "30"));
 const asJson = args.includes("--json");
 
-// A page is a map candidate if it carries wire art (mirrors the parser's own
-// map-line class): box-drawing corners or o--/--o connectors.
-const MAP_HINT = /[┌┐└┘┼]|o--|--o/;
+// A page is a map candidate if it carries wire art: box-drawing corners, o--/--o
+// connectors, compact `o-o` meshes or label-to-label wires (`5--4`).
+const MAP_HINT = /[┌┐└┘┼]|o--|--o|o-o|[0-9A-Z]--[0-9A-Z]/;
+
+if (args.includes("--glyphs")) {
+  const total = new Map<string, number>();
+  for (const file of readdirSync(kbDir)) {
+    if (!file.endsWith(".md")) continue;
+    const md = readFileSync(join(kbDir, file), "utf8");
+    if (!MAP_HINT.test(md)) continue;
+    const u = unknownGlyphs(md);
+    if (!u.size) continue;
+    for (const [g, n] of u) total.set(g, (total.get(g) ?? 0) + n);
+    console.log(file.replace(/\.md$/, "").padEnd(40), [...u].map(([g, n]) => `${JSON.stringify(g)}×${n}`).join(" "));
+  }
+  console.log("\ntotal:", [...total].sort((a, b) => b[1] - a[1]).map(([g, n]) => `${JSON.stringify(g)}×${n}`).join(" "));
+  process.exit(0);
+}
 
 interface Row extends PageDiagnostics { slug: string; }
 

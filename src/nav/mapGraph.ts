@@ -9,10 +9,28 @@
 import type { NavNode, NavEdge } from "./graph/types.js";
 import { edge } from "./graph/types.js";
 
-const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬";
-// Underscore appears as map decoration on some maps (e.g. "\_'\_" diagonals on
-// the Burg Tregyln map). It carries no direction, but it must be an allowed
-// grid char or the row fails the whole-line class test and splits the map.
+const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬╤╟╢╧";
+/** Internal glyph for a diagonal crossing (`X` in a `o-o-o`/`|X|X|` mesh, `◊`): two
+ *  diagonals that pass through each other without joining. */
+const DIAG_CROSS = "╳";
+/** Undo the crawler's turndown escaping of map rows (`\_`, `\*`, `\[`, `\]`,
+ *  `` \` ``). Other backslashes are real diagonals (`\|`, `\'`, `\-`, `\˄`). */
+const unescapeRow = (l: string) => l.replace(/\\([_*[\]`])/g, "$1");
+/** A map row with inline bold/link markup (kreta: `[**2**](/knossos.md "Knossos") ◄-- o`)
+ *  reduced to the text the reader sees. A wire char that starts a text node right
+ *  after such markup is turndown-escaped too (`**24**\--o`), so that `\` goes as well. */
+const visibleRow = (l: string) =>
+  l.replace(/\[([^\]]*)\]\([^)]*\)(?:\\(?=[-+#>=~]))?/g, "$1")
+    .replace(/(?<!\\)\*\*([^*]+?)(?<!\\)\*\*(?:\\(?=[-+#>=~]))?/g, "$1");
+function readRow(raw: string, conn: ConnGlyphs): string {
+  const row = unescapeRow(raw);
+  if (!/\]\(|(?<!\\)\*\*/.test(raw) || isMapLine(row, conn)) return row;
+  const vis = unescapeRow(visibleRow(raw));
+  return isMapLine(vis, conn) ? vis : row;
+}
+// Underscore is map decoration (a low wire, e.g. "˅_'_" on the Burg Tregyln map).
+// It carries no direction, but it must be an allowed grid char or the row fails
+// the whole-line class test and splits the map.
 // `^`/`v` are ASCII stand-ins some maps use for the ˄/˅ up/down arrows (e.g.
 // Knossos' Druidengilde sub-map mixes both). Allowed as grid decoration so a
 // row like "   ^|        ˄" or "   |   .|˄   v" doesn't fail the class test and
@@ -22,7 +40,11 @@ const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"
 // the row fails the class test and SPLITS the map — orphaning a whole fragment
 // (and severing the ˄/˅ climbs across it) from the rest and from the legend.
 // Lowercase letters still keep real legend/prose lines out of `isMapLine`.
-const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+:0-9A-Z˄˅^v<>▼◄►▲${BOX}]`);
+// `# * , @` are area fill (Mauer, Gebirge, maze walls) and `? § $ % & ●` legend
+// keys; allowed so their rows don't split a map, walkable only as legend-key nodes.
+const CLS = new RegExp(`[\\s o~|/\\\\.'_\\-+:0-9A-Z˄˅^v<>▼◄►▲˂°◊#*,@?§$%&●${BOX}]`);
+/** Glyphs normalized to one the tracer already understands. */
+const GLYPH_ALIAS: Record<string, string> = { "˂": "<", "°": "'", "◊": DIAG_CROSS };
 // A map row must contain at least one connector glyph (otherwise a row of pure
 // labels/spaces would be mistaken for map art). Box-drawing chars count too:
 // maps drawn with │─┌┼ often have corner-only rows ("┌┼┐", "┌┘ ' ˄") that carry
@@ -55,18 +77,31 @@ const LABEL_ARROWS = new Set(["^"]);
 // hardcoded letter list. Water is kept separate so we never route along a river.
 const PATHWORD = /^(pfad|weg|strasse|gasse|route|steig|steg|treppe|bruecke|furt|damm|pass|allee|promenade|trampelpfad|saumpfad|wanderweg)/;
 const WATERWORD = /^(fluss|bach|strom|kanal|graben|see|teich|sumpf|moor|watt|priel|meer|ufer|flut)/;
+/** Symbols a legend can use as room keys (römerstraße `§ [Römerlager Kleinbonum]`,
+ *  nixenstadt `? Unbekannt`, südostdörrland `● Eventuelle Falltür`). */
+const SYMBOL_KEYS = "?§$%&●";
+/** A legend key line: the key(s) and the description. Lowercase keys may be grouped
+ *  (kreta `a,b,c,d,e,f,g,h Schlüssel A bis H`). */
+const LEGEND_KEY = /^\s*([0-9]{1,3}|[A-Z]{1,2}[0-9]?|~|\^|[?§$%&●]|[a-z](?:,[a-z])*)\s+(\S.*)$/;
 export function connectorGlyphs(md: string): ConnGlyphs {
   const path = new Set<string>(), water = new Set<string>(), node = new Set<string>();
-  for (const ln of md.split("\n")) {
-    const m = /^ {0,2}([a-z])\s+([A-Za-zÄÖÜäöü].*)$/.exec(ln);
-    if (m && m[1] !== "o" && m[1] !== "v") {
-      const w = deumlaut(m[2]);
-      if (WATERWORD.test(w)) water.add(m[1]);
-      else if (PATHWORD.test(w)) path.add(m[1]);
+  for (const raw of md.split("\n")) {
+    const ln = unescapeRow(raw);
+    const m = /^ {0,2}([a-z](?:,[a-z])*)\s+([A-Za-zÄÖÜäöü_[].*)$/.exec(ln);
+    if (m) {
+      const w = deumlaut(m[2].replace(/^[_[]/, ""));
+      for (const k of m[1].split(",")) {
+        if (k === "o" || k === "v") continue;
+        if (WATERWORD.test(w)) water.add(k);
+        else if (PATHWORD.test(w)) path.add(k);
+        else node.add(k); // a lowercase room key (kreta's Schlüssel a–h, barovia's g/h/m)
+      }
     }
     // A standalone arrow legend label that links into a sub-map → a gateway node.
     const am = /^\s*(\S)\s+\[[^\]]+\]\(#/.exec(ln);
     if (am && LABEL_ARROWS.has(am[1])) node.add(am[1]);
+    const sm = /^\s*(\S)\s+\S/.exec(ln);
+    if (sm && SYMBOL_KEYS.includes(sm[1])) node.add(sm[1]);
   }
   return { path, water, node };
 }
@@ -74,7 +109,7 @@ const isMapLine = (l: string, conn: ConnGlyphs = EMPTY_CONN) =>
   l.length > 4 &&
   (WIRECH.test(l) || [...l].some((c) => conn.path.has(c))) &&
   !/\|\s*:?-{2,}:?\s*\|/.test(l) &&
-  [...l].every((c) => CLS.test(c) || conn.path.has(c) || conn.water.has(c));
+  [...l].every((c) => CLS.test(c) || conn.path.has(c) || conn.water.has(c) || conn.node.has(c));
 // A short (≤4-char) wire row that joins TWO nodes with a connector — e.g. "5--4"
 // (the Drachenhort/Spalt end of the Drachenkopf map) or "T--1". `isMapLine`'s
 // length gate drops these, so they're only accepted as a CONTINUATION of an
@@ -82,14 +117,11 @@ const isMapLine = (l: string, conn: ConnGlyphs = EMPTY_CONN) =>
 // or "   o" is NOT matched, preserving the old block boundaries elsewhere.
 const isNodeJoinRow = (l: string) =>
   /^[\s]*[0-9A-Zo~][-/\\|]{1,2}[0-9A-Zo~][\s]*$/.test(l) && [...l].every((c) => CLS.test(c));
-const isLegendLine = (l: string) => /^\s*([0-9]{1,2}|[A-Z~])\s+\S/.test(l);
 // A map row that holds ONLY node labels (gates/numbers, e.g. "O" or "1     2"
 // above the wires they head) has no wire char, so isMapLine rejects it — which
 // would drop those rooms or split the map. Treat such a row as map content when
 // it directly borders the block, so the gate nodes are created and wired.
-// `isLoneLabel` = exactly one label; `isLabelRow` = one or more (e.g. "1     2").
-const isLoneLabel = (l: string) => /^\s*[A-Z0-9]{1,3}\s*$/.test(l);
-const isLabelRow = (l: string) => l.trim() !== "" && /^(?:\s*[A-Z0-9]{1,3})+\s*$/.test(l);
+const isLabelRow = (l: string) => /^\s*[A-Z0-9]{1,3}(?:\s+[A-Z0-9]{1,3})*\s*$/.test(l);
 const anchorOf = (name: string) => name.trim().replace(/\s+/g, "_");
 function cleanName(s: string): string {
   return s
@@ -123,6 +155,9 @@ const OPP: Record<string, string> = { E: "W", W: "E", N: "S", S: "N", NE: "SW", 
 const RING = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const turn = (d: string, k: number): string => RING[(RING.indexOf(d) + k + 8) % 8];
 const FLEX = ".'˄˅^v";
+/** One-way arrows (legend: `▼ ◄` Nur hinein, `► ▲` Kein zurück): a path through one
+ *  may only be walked in the arrow's direction. */
+const ARROW_DIR: Record<string, string> = { "►": "E", ">": "E", "◄": "W", "<": "W", "▲": "N", "▼": "S" };
 // Vertical (z-axis) portal glyphs: ˄ Hoch, ˅ Runter (with ASCII ^/v synonyms).
 // A wire that runs through one is a climb/descent, not a compass move — labelled
 // by travel direction.
@@ -136,14 +171,30 @@ const wireDirs = (ch: string): string[] =>
   : ch === "|" || ch === "│" || ch === "║" ? ["N", "S"]
   : ch === "/" ? ["NE", "SW"]
   : ch === "\\" ? ["NW", "SE"]
-  : "┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬+".includes(ch) ? Object.keys(OFF) // drawn junctions/corners (and ASCII '+'): connect through
+  : ch === DIAG_CROSS ? ["NE", "SW", "NW", "SE"]
+  : "┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬╤╟╢╧+".includes(ch) ? Object.keys(OFF) // drawn junctions/corners (and ASCII '+'): connect through
   : "►◄><".includes(ch) ? ["E", "W"] // direction arrows: traverse along their axis
   : "▲▼".includes(ch) ? ["N", "S"]
   : FLEX.includes(ch) ? Object.keys(OFF)
   : [];
 
+/** Glyphs in wire-bearing rows that the parser rejects: each such row splits a map or
+ *  is dropped. Rows with words (3+ letters in a row) are prose and skipped. For the
+ *  audit. */
+export function unknownGlyphs(md: string): Map<string, number> {
+  const conn = connectorGlyphs(md);
+  const out = new Map<string, number>();
+  for (const raw of md.split("\n")) {
+    const l = readRow(raw, conn);
+    if (l.length <= 4 || !WIRECH.test(l) || isMapLine(l, conn) || /[a-zäöüß]{3}/i.test(l) || /^\s*\|.*\|\s*$/.test(l)) continue;
+    for (const c of l)
+      if (!CLS.test(c) && !conn.path.has(c) && !conn.water.has(c) && !conn.node.has(c)) out.set(c, (out.get(c) ?? 0) + 1);
+  }
+  return out;
+}
+
 function splitGroups(md: string, conn: ConnGlyphs = connectorGlyphs(md)): MapGroup[] {
-  const lines = md.split("\n");
+  const lines = md.split("\n").map((l) => readRow(l, conn));
   const groups: MapGroup[] = [];
   let curHeading = "";
   let i = 0;
@@ -179,11 +230,13 @@ function splitGroups(md: string, conn: ConnGlyphs = connectorGlyphs(md)): MapGro
       while (j < lines.length && miss < 4 && !isMapLine(lines[j], conn)) {
         const ln = lines[j];
         if (ln.trim() === "") { j++; continue; } // blank: neutral, keep legend context
-        const m = /^\s*([0-9]{1,3}|[A-Z]{1,2}[0-9]?|~|\^)\s+(\S.*)$/.exec(ln);
+        const m = LEGEND_KEY.exec(ln);
         if (m) {
-          if (!labelName.has(m[1])) labelName.set(m[1], cleanName(m[2]));
-          addAnchors(m[1], m[2]);
-          last = m[1]; miss = 0;
+          for (const k of m[1].split(",")) {
+            if (!labelName.has(k)) labelName.set(k, cleanName(m[2]));
+            addAnchors(k, m[2]);
+          }
+          last = m[1].split(",")[0]; miss = 0;
         } else if (last && /^\s*[([]/.test(ln)) {
           labelName.set(last, (labelName.get(last) + " " + cleanName(ln)).trim());
           addAnchors(last, ln);
@@ -209,9 +262,7 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
   // `water` letter becomes blank (present so its line survived the class test,
   // but not a walkable edge — never invent a river you can stroll along).
   const remap = (l: string) =>
-    conn.path.size || conn.water.size
-      ? [...l].map((c) => (conn.path.has(c) ? "." : conn.water.has(c) ? " " : c)).join("")
-      : l;
+    [...l].map((c) => (conn.path.has(c) ? "." : conn.water.has(c) ? " " : GLYPH_ALIAS[c] ?? c)).join("");
 
   groups.forEach((g, gi) => {
     const W = Math.max(...g.mapLines.map((l) => l.length));
@@ -219,6 +270,31 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
     grids[gi] = grid;
     const Hh = grid.length;
     const at = (r: number, c: number) => (r >= 0 && r < Hh && c >= 0 && c < W ? grid[r][c] : " ");
+    // `X`/`x`: a legend key is what the legend says; a wire ending AT it makes it a
+    // room (amerindia `o--X`, the S-Bahn `X` with a `|` below); otherwise, between
+    // diagonal rooms/wires, it is the crossing of an `o-o-o`/`|X|X|` mesh.
+    for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) {
+      const ch = grid[r][c];
+      if ((ch !== "X" && ch !== "x") || g.labelName.has(ch) || conn.node.has(ch)) continue;
+      const wireInto = "-─═".includes(at(r, c - 1)) || "-─═".includes(at(r, c + 1)) ||
+        "|│║".includes(at(r - 1, c)) || "|│║".includes(at(r + 1, c));
+      if (wireInto) continue;
+      const diag = [[-1, -1], [-1, 1], [1, -1], [1, 1]].filter(([dr, dc]) => /[o0-9A-WYZ/\\]/.test(at(r + dr, c + dc))).length;
+      if (diag >= 2) grid[r][c] = DIAG_CROSS;
+    }
+    // A symbol/lowercase legend key is a room only where a wire points at it
+    // (`o-§ o`, `◄-- a ◄--`); in a wire-less field (südostdörrland's `●` trapdoor grid)
+    // or as a ruler letter beside a frame it is decoration.
+    const HW = "-─═►◄<>";
+    const hWire = (r: number, c: number, d: number) => HW.includes(at(r, c + d)) || (at(r, c + d) === " " && HW.includes(at(r, c + 2 * d)));
+    const wiredTo = (r: number, c: number) =>
+      hWire(r, c, -1) || hWire(r, c, 1) ||
+      "|│║▲▼˄˅".includes(at(r - 1, c)) || "|│║▲▼˄˅".includes(at(r + 1, c)) ||
+      at(r - 1, c + 1) === "/" || at(r + 1, c - 1) === "/" || at(r - 1, c - 1) === "\\" || at(r + 1, c + 1) === "\\";
+    for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) {
+      const ch = grid[r][c];
+      if (conn.node.has(ch) && !LABEL_ARROWS.has(ch) && !/[A-Z]/.test(ch) && !wiredTo(r, c)) grid[r][c] = " ";
+    }
     const isNode = (ch: string) => ch === "o" || ch === "~" || /[A-Z]/.test(ch) || conn.node.has(ch);
     const gid = (r: number, c: number) => `${gi}:${r},${c}`;
     const local: string[] = []; groupNodes[gi] = local;
@@ -241,7 +317,7 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
     // (e.g. "o  1" with "| ˄" to the left: the ˄ belongs to the o's vertical
     // link, not to the "1" label). Counting them here wrongly detached the
     // Drachenkopf "1" from its `o`, so exclude them from the wire-touch test.
-    const EDGECH = "|/\\-.'" + BOX;
+    const EDGECH = "|/\\-.'" + BOX + DIAG_CROSS;
     for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++)
       if (/[0-9]/.test(at(r, c)) && !/[0-9]/.test(at(r, c - 1)) && !/[A-Z]/.test(at(r, c - 1))) {
         let c2 = c; while (/[0-9]/.test(at(r, c2 + 1))) c2++;
@@ -280,6 +356,12 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
     }
     const filled = new Set<string>();
     for (const [r, c] of fills) { grid[r][c] = "˄"; filled.add(`${r},${c}`); }
+    // A single blank between a horizontal wire/arrow and a room (kreta's labyrinth
+    // `◄-- o --► a`) is part of the wire.
+    for (let r = 0; r < Hh; r++) for (let c = 0; c < W; c++) {
+      if (at(r, c) !== " ") continue;
+      if ((HW.includes(at(r, c - 1)) && nodeCell(r, c + 1)) || (nodeCell(r, c - 1) && HW.includes(at(r, c + 1)))) grid[r][c] = "-";
+    }
     // Map a cell to a node, treating a multi-char label as occupying its whole
     // column span [c, cEnd] so wires adjacent to any part of the label connect.
     const nodeAt = (r: number, c: number) => {
@@ -390,6 +472,7 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
         if (flanked) continue;
         if (isNode(fch) || /[0-9]/.test(fch)) { if (!underCrossed(fr, fc, startDir)) { const t = nodeAt(fr, fc); if (t && t.gid !== id && !found.has(t.gid)) found.set(t.gid, { dir: COMPASS[startDir], hidden: false }); } continue; }
         if (wireDirs(fch).length === 0) continue;
+        if (ARROW_DIR[fch] && ARROW_DIR[fch] !== startDir) continue;
         const seen = new Set([`${fr},${fc}`]);
         // Frontier flags: hasApos (crossed a "'" → command unknown), hasDir (has a
         // definite compass dir), vert (near/on a ˄/˅ portal → hoch/runter), adir
@@ -422,7 +505,7 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
           // so a real junction still fans out — correct at a genuine branch.
           const cellDirs = VERT.includes(cch)
             ? climbStep(r, c, adir, seen)
-            : crossover.has(`${r},${c}`) || DOTS.includes(cch)
+            : crossover.has(`${r},${c}`) || DOTS.includes(cch) || cch === DIAG_CROSS
               ? wireDirs(cch).filter((d) => d === adir)
               : wireDirs(cch);
           for (const wd of cellDirs) {
@@ -459,6 +542,7 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
             }
             const key = `${nr},${nc}`; if (seen.has(key)) continue;
             const nd = wireDirs(nch); if (nd.length === 0) continue;
+            if (ARROW_DIR[nch] && ARROW_DIR[nch] !== wd) continue;
             if (!FLEX.includes(nch) && !FLEX.includes(at(r, c)) && !nd.includes(OPP[wd])) continue;
             seen.add(key); q.push([nr, nc, hasApos || nch === "'", hasDir || !FLEX.includes(nch) || nearVert(nr, nc), vert || nearVert(nr, nc), wd, csign !== 0 ? csign : filled.has(key) ? 0 : climbSign(nch)]);
           }
@@ -861,7 +945,7 @@ export function pageMaps(md: string): PageMap[] {
 export interface PageLink { label: string; name: string; targets: string[]; }
 export function pageLinks(md: string): PageLink[] {
   const out: PageLink[] = [];
-  const rowRe = /^\s*([0-9]{1,3}|[A-Z]{1,2}[0-9]?|~)\s+(\S.*)$/;
+  const rowRe = LEGEND_KEY;
   // Pull every "](/some/page.md …)" target out of a legend line.
   const grab = (text: string, set: Set<string>) => {
     for (const m of text.matchAll(/\]\((\/[^)\s]+?)\.md[^)]*\)/g))

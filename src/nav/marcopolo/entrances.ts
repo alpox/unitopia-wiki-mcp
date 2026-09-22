@@ -12,6 +12,7 @@
  */
 import type { McMap } from "./extract.js";
 import { crossPortals } from "./graph.js";
+import { cellEdges, DIRS } from "./connectors.js";
 
 export type Side = "N" | "E" | "S" | "W";
 
@@ -52,6 +53,14 @@ const COMPASS8: Record<string, string> = {
   N: "norden", S: "sueden", E: "osten", W: "westen",
   NE: "nordosten", NW: "nordwesten", SE: "suedosten", SW: "suedwesten",
 };
+/** The compass directions (German command words) marcopolo draws NO connector for at
+ *  cell (r,c) — the moves not walkable from it. `null` when the cell is text, not a
+ *  map cell (see `cellEdges`). */
+export function cellBlockedDirs(rows: string[], r: number, c: number): string[] | null {
+  const open = cellEdges(rows, r, c);
+  if (!open) return null;
+  return DIRS.filter((d) => !open.has(d)).map((d) => COMPASS8[d]);
+}
 /** For each overworld gate cell of a sub-map (a `landBorderLabels` cell near where the
  *  overworld links to that sub-map), the compass directions marcopolo's connector glyphs
  *  DON'T draw — i.e. the moves that are not walkable from that tile. `|`=N/S, `-`=E/W,
@@ -66,21 +75,13 @@ export function overworldGateDirs(over: McMap, landLabels: Set<string>, subSlug:
   const cr = links.reduce((s, l) => s + l.row, 0) / links.length;
   const cc = links.reduce((s, l) => s + l.col, 0) / links.length;
   const rows = over.ascii.split("\n");
-  const ch = (r: number, c: number) => rows[r]?.[c] ?? " ";
   const out: GateDirs[] = [];
   for (let r = 0; r < rows.length; r++) for (let c = 0; c < (rows[r]?.length ?? 0); c++) {
     if (!landLabels.has(rows[r][c]) || Math.hypot(r - cr, c - cc) > 12) continue;
+    const blocked = cellBlockedDirs(rows, r, c);
+    if (!blocked) continue;
     const dr = r - cr, dc = c - cc;
     const side: Side = Math.abs(dc) >= Math.abs(dr) ? (dc < 0 ? "W" : "E") : (dr < 0 ? "N" : "S");
-    const blocked: string[] = [];
-    if (ch(r - 1, c) !== "|") blocked.push(COMPASS8.N);
-    if (ch(r + 1, c) !== "|") blocked.push(COMPASS8.S);
-    if (ch(r, c - 1) !== "-") blocked.push(COMPASS8.W);
-    if (ch(r, c + 1) !== "-") blocked.push(COMPASS8.E);
-    if (!"/X".includes(ch(r - 1, c + 1))) blocked.push(COMPASS8.NE);
-    if (!"\\X".includes(ch(r - 1, c - 1))) blocked.push(COMPASS8.NW);
-    if (!"/X".includes(ch(r + 1, c - 1))) blocked.push(COMPASS8.SW);
-    if (!"\\X".includes(ch(r + 1, c + 1))) blocked.push(COMPASS8.SE);
     out.push({ side, row: r, col: c, blockedDirs: blocked });
   }
   return out;

@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { routeOnPage, pageMaps, listRooms, diagnosePage, subMapEntrances } from "./mapGraph.js";
+import { routeOnPage, pageMaps, listRooms, diagnosePage, subMapEntrances, pageGraphIR } from "./mapGraph.js";
 import { config } from "../config.js";
 
 const read = (slug: string) => readFileSync(join(config.kbDir, `${slug}.md`), "utf8");
@@ -125,4 +125,53 @@ test("every map-hint page parses without throwing", () => {
   // 117 yielding graphs (the 5 misses use an unsupported inline-label style).
   assert.ok(scanned >= 120, `expected >=120 map-hint pages, got ${scanned}`);
   assert.ok(graphs >= 117, `expected >=117 parseable maps, got ${graphs}`);
+});
+
+// ---------------------------------------------------------------------------
+// Glyph semantics (corpus survey 2026-09-22).
+// ---------------------------------------------------------------------------
+const labelled = (slug: string, label: string) => {
+  const g = pageGraphIR(read(slug), slug, "r");
+  return g.nodes.filter((n) => n.sources[0]?.label === label)
+    .map((n) => ({ name: n.name, degree: g.edges.filter((e) => e.from === n.id || e.to === n.id).length }));
+};
+
+test("markdown escapes in map rows are undone (wikitext `/ \\___ |`, md `/ \\\\_\\_\\_ |`)", () => {
+  const ascii = pageMaps(read("magny")).map((m) => m.ascii).join("\n");
+  assert.ok(ascii.includes("/ \\___ |"), "the low wire keeps its real columns");
+});
+
+test("X in an o-o-o / |X|X| mesh is a diagonal crossing, not a room", () => {
+  const d = diagnosePage(read("handelsweg-borsippa"))!;
+  assert.ok(d.components <= 3, `mesh should hang together, got ${d.components} components`);
+  assert.ok(labelled("handelsweg-borsippa", "X").length <= 2, "only the misaligned edge row keeps X rooms");
+});
+
+test("X stays a room where a wire ends at it or the legend defines it", () => {
+  assert.ok(labelled("mowan", "X").some((n) => n.name === "Schranke" && n.degree > 0), "mowan `X Schranke`");
+  assert.ok(labelled("s-bahn-strecke", "X").some((n) => n.degree > 0), "s-bahn `X` with a wire below");
+  assert.ok(labelled("amerindia", "X").some((n) => n.degree > 0), "amerindia `o--X`");
+});
+
+test("lowercase legend keys are rooms (nankea `h Hafentor`)", () => {
+  const r = routeOnPage(read("nankea-(stadt)"), "Hafentor", "Marktplatz");
+  assert.ok(r.ok, "Hafentor is a routable room");
+});
+
+test("symbol keys in a wire-less field are decoration (südostdörrland `●`)", () => {
+  assert.equal(labelled("südostdörrland", "●").length, 0);
+});
+
+test("one-way arrows are directed (stratos `14->12<-14`)", () => {
+  const g = pageGraphIR(read("stratos"), "stratos", "r");
+  const lbl = new Map(g.nodes.map((n) => [n.id, n.sources[0]?.label]));
+  const has = (a: string, b: string) => g.edges.some((e) => lbl.get(e.from) === a && lbl.get(e.to) === b);
+  assert.ok(has("14", "12"), "14 → 12 along the arrow");
+  assert.ok(!has("12", "14"), "no way back against the arrow");
+});
+
+test("a long row of capitals does not hang the label-row check (wagenrennen)", () => {
+  const t = Date.now();
+  listRooms(read("wagenrennen"));
+  assert.ok(Date.now() - t < 1000, "catastrophic regex backtracking");
 });

@@ -29,6 +29,7 @@
     "dev": "tsx watch src/server.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "audit:maps": "tsx src/nav/audit.ts",
+    "audit:seams": "tsx src/nav/seamAudit.ts",
     "build": "tsc -p tsconfig.json",
     "prepare": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
@@ -55,9 +56,13 @@
     "turndown-plugin-gfm": "^1.0.2",
     "zod": "^3.24.1"
   },
-  "optionalDependencies": {
+  "peerDependencies": {
     "@huggingface/transformers": "^3.8.1",
     "hnswlib-node": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@huggingface/transformers": { "optional": true },
+    "hnswlib-node": { "optional": true }
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

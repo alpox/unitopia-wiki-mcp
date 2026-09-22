@@ -1,6 +1,11 @@
 import { Embeddings, type EmbeddingsParams } from "@langchain/core/embeddings";
-import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
 import { config } from "./config.js";
+
+/** The slice of transformers.js used here. The package is an optional peer (only the
+ *  docker image installs it), so it is imported by a non-literal specifier and
+ *  typechecking never needs it. */
+type FeatureExtractionPipeline = (texts: string[], opts: { pooling: "mean"; normalize: boolean }) => Promise<{ tolist(): unknown }>;
+const TRANSFORMERS: string = "@huggingface/transformers";
 
 /**
  * In-process embeddings via ONNX Runtime (transformers.js) — no ollama, no
@@ -26,7 +31,8 @@ export class LocalEmbeddings extends Embeddings {
     if (!this.extractor) {
       // `dtype: "q8"` uses the quantised ONNX weights: ~4× smaller download and
       // faster CPU inference, with negligible retrieval-quality loss.
-      this.extractor = pipeline("feature-extraction", this.model, { dtype: "q8" });
+      this.extractor = import(TRANSFORMERS).then(({ pipeline }) =>
+        pipeline("feature-extraction", this.model, { dtype: "q8" }) as Promise<FeatureExtractionPipeline>);
     }
     return this.extractor;
   }

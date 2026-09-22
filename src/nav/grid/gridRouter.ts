@@ -16,6 +16,11 @@ const COMPASS: Record<Dir, string> = {
   E: "osten", W: "westen", N: "norden", S: "sueden",
   NE: "nordosten", SW: "suedwesten", NW: "nordwesten", SE: "suedosten",
 };
+/** Opposite compass of each direction — for the symmetric (undirected) marco edge check. */
+const OPP: Record<Dir, string> = {
+  E: "westen", W: "osten", N: "sueden", S: "norden",
+  NE: "suedwesten", SW: "nordosten", NW: "suedosten", SE: "nordwesten",
+};
 const DIRS = Object.keys(OFF) as Dir[];
 
 const key = (c: number, r: number) => `${c},${r}`;
@@ -142,11 +147,12 @@ export function routeOnGrid(g: GridMap, fromQ: string, toQ: string): RouteResult
       const [dr, dc] = OFF[d];
       const nc = cc + dc, nr = cr + dr;
       if (!walkable(g, nc, nr)) continue;
-      // marcopolo's EXACT edges at an entrance tile: the gate's connector glyphs say which
-      // moves the road actually makes (e.g. Lutetia's east gate has no NE edge). Applied
-      // by SIDE at the injected gateway tile, so the router leaves a city the way the map
-      // draws it, not on a shortcut diagonal.
-      if (edgeBlock.get(key(cc, cr))?.has(COMPASS[d])) continue;
+      // marcopolo's EXACT edges at a gateway/POI tile: the cell's connector glyphs say which
+      // moves the map actually makes (Lutetia's east gate has no NE edge; Mixnix connects
+      // ONLY east). An edge is undirected, so the move is blocked if the SOURCE forbids `d`
+      // OR the DESTINATION forbids the opposite — that also stops ARRIVING at a POI from a
+      // side it isn't reachable from. No cross-grid alignment: a compass direction maps 1:1.
+      if (edgeBlock.get(key(cc, cr))?.has(COMPASS[d]) || edgeBlock.get(key(nc, nr))?.has(OPP[d])) continue;
       // No diagonal corner-cutting past a blocked footprint: a diagonal step clipping the
       // corner of the solid city body is not a real move (marcopolo `X`es it).
       if (dr !== 0 && dc !== 0 && (g.blocked?.[cr]?.[nc] || g.blocked?.[nr]?.[cc])) continue;

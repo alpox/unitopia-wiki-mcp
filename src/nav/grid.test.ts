@@ -191,6 +191,27 @@ test("entranceGateways: blocks the village footprint and injects its mid-N/mid-S
   assert.ok((grid.blocked ?? []).some((row) => row.some(Boolean)), "village footprint marked blocked");
 });
 
+test("entranceGateways: the forest body is marcopolo's hole, not the imagemap rects (if artifacts built)", async (t) => {
+  const gridFile = join(config.kbDir, "_gridmaps", "gallien.json");
+  const marco = join(config.kbDir, "_marcopolo", "gallien", "gallien.md");
+  if (!existsSync(gridFile) || !existsSync(marco)) { t.skip("gallien artifacts not present"); return; }
+  const grid = JSON.parse(readFileSync(gridFile, "utf8")) as GridMap;
+  const gws = await entranceGateways(grid, config.kbDir);
+  const blocked = (c: number, r: number) => !!grid.blocked?.[r]?.[c];
+  // The painted forest cols 18–19 (between the imagemap rects) is inside marcopolo's
+  // forest; cols 20–23 are ordinary walkable forest marcopolo draws around it.
+  for (let r = 31; r <= 37; r++) assert.ok(blocked(15, r), `forest interior (15,${r}) is solid`);
+  assert.ok(!blocked(21, 33), "walkable forest east of the Gallierwald");
+  const wald = gws.filter((g) => g.target === "gallierwald");
+  assert.equal(wald.length, 12, "one gateway per marcopolo entrance");
+  const borders = (g: { col: number; row: number }) => [[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dr, dc]) => blocked(g.col + dc, g.row + dr));
+  assert.ok(wald.every(borders), "every entrance sits on the body's rim");
+  assert.ok(wald.every((g) => !blocked(g.col, g.row)), "no entrance on a blocked tile");
+  const dorf = gws.filter((g) => g.target === "gallierdorf");
+  for (const [c, r] of [[7, 31], [8, 32], [9, 33]]) assert.ok(blocked(c, r), `village house (${c},${r}) is solid`);
+  assert.ok(dorf.every(borders), "village gates border the village");
+});
+
 test("entranceGateways: a road-entered CITY gets a gateway per road crossing into the right gate room (if artifacts built)", async (t) => {
   const gridFile = join(config.kbDir, "_gridmaps", "gallien.json");
   const marco = join(config.kbDir, "_marcopolo", "gallien", "lutetia.md");

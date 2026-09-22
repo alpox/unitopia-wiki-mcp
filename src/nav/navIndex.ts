@@ -2,6 +2,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { saveJson } from "../persist.js";
 import { listRooms, routeOnPage, pageMaps, pageLinks, deumlaut, roomTokens, tokenOverlap, type PageMap, type RouteResult, type RouteStep } from "./mapGraph.js";
 import { routeOnGrid, renderGridAscii } from "./grid/gridRouter.js";
 import { entranceGateways } from "./grid/entranceGateways.js";
@@ -82,8 +83,10 @@ export async function buildNavIndex(): Promise<void> {
 }
 
 /** Build the in-memory nav index directly from the KB (no navrooms.json). */
-export async function buildNavInMemory(): Promise<NavIndex> {
-  return new NavIndex(await computeNavRooms());
+export async function buildNavInMemory(keep = false): Promise<NavIndex> {
+  const data = await computeNavRooms();
+  if (keep) await saveJson(navPath(), data).catch(() => {});
+  return new NavIndex(data);
 }
 
 export interface RouteCandidates {

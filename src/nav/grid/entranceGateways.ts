@@ -1,20 +1,15 @@
 /**
  * Synthesize overworld→sub-map ENTRANCE gateways for a raster (gif) region.
  *
- * The wiki gif marks a forest/area with a SINGLE gateway tile and no footprint, so
- * the router can only ever enter at that one point — forcing long detours "around
- * half the forest". But the wiki sub-map itself lists every real penetrable
- * entrance (its "1 Rand → /region.md" edge rooms), and the marcopolo overworld
- * marks WHERE each of those entrances sits. This module ties the two together:
- *
- *   wiki edge room  (side, ordinal)   ── same physical entrance ──   marcopolo
- *   overworld cell  (side, ordinal, marco-coord)  ──affine──▶  gif tile
- *
- * and emits one Gateway per entrance (each pinning its specific "1" room by
- * coordinate), so grid Dijkstra enters the wald at the side you actually approach.
- * marcopolo is used ONLY for position; penetrability comes from the wiki. General:
- * fires for any gif region with a marcopolo overworld + ≥3 shared landmarks; a
- * region without them keeps today's single-gate behavior. See
+ * Each source decides what it is good at:
+ *   - wiki gif: terrain, cost and absolute geometry; which page an area belongs to;
+ *   - wiki sub-map: the room you enter (its edge rooms, matched by side + ordinal);
+ *   - marcopolo overworld, registered tile-by-tile onto the gif (`mcRegister.ts`):
+ *     the solid BODY of a sub-map (its blank hole — the painted area around it can be
+ *     ordinary walkable forest), which entrances exist and where, and the exact moves
+ *     at a gateway tile.
+ * marcopolo only ever removes walkability the gif offers. A region without a
+ * registrable marcopolo overworld keeps its gateways unchanged. See
  * [[overworld-ascii-entrance-seam]].
  */
 import { readFile } from "node:fs/promises";
@@ -23,8 +18,10 @@ import path from "node:path";
 import type { GridMap, Gateway } from "./types.js";
 import { subMapEntrances, perimeterRooms, deumlaut, type SubMapEntrance, type PerimeterRoom } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
-import { penetrableEntrances, bySide, borderGateTokens, landBorderLabels, overworldGateDirs, type McEntrance, type Side } from "../marcopolo/entrances.js";
+import { penetrableEntrances, bySide, borderGateTokens, landBorderLabels, overworldGateDirs, cellBlockedDirs, type McEntrance, type Side } from "../marcopolo/entrances.js";
 import type { McMap } from "../marcopolo/extract.js";
+import { overworldLayer, type McTileLayer } from "../marcopolo/overworldLayer.js";
+import { registerLayer, apply, normSlug, type Registration } from "./mcRegister.js";
 interface Bbox { minC: number; maxC: number; minR: number; maxR: number; }
 
 /** The overworld footprint of a sub-map, read from the BAKED `grid.subMaps` (the
@@ -53,71 +50,7 @@ function footprintOf(grid: GridMap, target: string): { tiles: Set<string>; bbox:
   return tiles.size ? { tiles, bbox: { minC, maxC, minR, maxR } } : null;
 }
 
-/** Place an entrance just OUTSIDE the gif footprint on `side`, at the marcopolo
- *  overworld position of the entrance mapped through the region affine. marcopolo's
- *  overworld is GEOMETRIC (unlike the wiki ascii sub-map, which is a topological
- *  schematic whose row/col spacing does NOT map linearly to the gif — that collapses
- *  several distinct entrances onto one tile, so the router enters the wrong `1 Rand`,
- *  "one tile too far north"). The affine (fit on shared landmarks, already gating the
- *  match) gives the along-edge position; the cross-axis is pinned one tile off the
- *  footprint so the crossing step is straight. Snapped to a walkable, non-footprint tile. */
-function placeByAffine(grid: GridMap, fp: Bbox, affine: Affine, side: Side, e: McEntrance): [number, number] | null {
-  const [gx, gy] = apply(affine, [e.col, e.row]);
-  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  let c: number, r: number;
-  if (side === "W" || side === "E") {
-    // Clamp the along-edge row to the footprint's INTERIOR span: an entrance on the
-    // very top/bottom row is at a CORNER, which is not a straight crossing — the router
-    // then has to step diagonally (suedosten/nordosten) onto it. Keeping it one row in
-    // lets the approach cross straight (osten/westen).
-    r = clamp(Math.round(gy), fp.minR + 1, fp.maxR - 1);
-    c = side === "W" ? fp.minC - 1 : fp.maxC + 1;
-  } else {
-    c = clamp(Math.round(gx), fp.minC + 1, fp.maxC - 1);
-    r = side === "N" ? fp.minR - 1 : fp.maxR + 1;
-  }
-  return snapFree(grid, c, r);
-}
-
 const lastSeg = (p: string) => p.split("/").pop()!;
-const normSlug = (s: string) =>
-  lastSeg(s).replace(/\.md$/, "").replace(/^kompass-/, "").toLowerCase();
-
-/** A separable least-squares affine fit p → (a·p+b) on each axis independently
- *  (the gif and marcopolo grids differ only in scale + offset, no rotation). */
-interface Affine { ax: number; bx: number; ay: number; by: number; }
-function fitAffine(pairs: { from: [number, number]; to: [number, number] }[]): Affine | null {
-  if (pairs.length < 3) return null;
-  const fit1 = (get: (p: { from: [number, number]; to: [number, number] }) => [number, number]) => {
-    const n = pairs.length;
-    let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (const p of pairs) { const [x, y] = get(p); sx += x; sy += y; sxx += x * x; sxy += x * y; }
-    const d = n * sxx - sx * sx;
-    if (Math.abs(d) < 1e-6) return null;
-    const a = (n * sxy - sx * sy) / d;
-    return { a, b: (sy - a * sx) / n };
-  };
-  const fx = fit1((p) => [p.from[0], p.to[0]]);
-  const fy = fit1((p) => [p.from[1], p.to[1]]);
-  if (!fx || !fy) return null;
-  return { ax: fx.a, bx: fx.b, ay: fy.a, by: fy.b };
-}
-const apply = (a: Affine, [x, y]: [number, number]): [number, number] => [a.ax * x + a.bx, a.ay * y + a.by];
-
-/** Landmark pairs: gif gateways and marcopolo-overworld cells that reference the
- *  same target page (by normalized slug), giving (marco-coord → gif-coord). */
-function landmarks(grid: GridMap, mcCells: { row: number; col: number; page: string }[]) {
-  const gifBy = new Map<string, [number, number]>();
-  for (const g of grid.gateways) if (g.target) gifBy.set(normSlug(g.target), [g.col, g.row]);
-  const pairs: { from: [number, number]; to: [number, number] }[] = [];
-  const seen = new Set<string>();
-  for (const c of mcCells) {
-    const k = normSlug(c.page);
-    const gif = gifBy.get(k);
-    if (gif && !seen.has(k)) { seen.add(k); pairs.push({ from: [c.col, c.row], to: gif }); }
-  }
-  return pairs;
-}
 
 /** Nearest walkable tile to (col,row), spiralling out — an entrance must sit on a
  *  tile the grid router can actually stand on. `avoidBlocked` also skips the sub-map
@@ -188,12 +121,14 @@ function roadCrossings(grid: GridMap, fp: { tiles: Set<string>; bbox: Bbox }): {
  *  Then block the footprint so the router can't cut through the city the gif paints as
  *  walkable grass. Returns [] (blocks nothing) when it is not a road-entered city.
  *  See [[overworld-ascii-entrance-seam]]. */
-async function cityGateways(grid: GridMap, kbDir: string, over: McMap, mcOver: string, regionSlug: string, gw: Gateway): Promise<Gateway[]> {
+async function cityGateways(grid: GridMap, kbDir: string, over: McMap, mcOver: string, regionSlug: string, gw: Gateway, hole?: Set<string>): Promise<Gateway[]> {
   if (!gw.target) return [];
   const fp = footprintOf(grid, gw.target);
   if (!fp) return [];
   const crossings = roadCrossings(grid, fp);
   if (!crossings.length) return [];
+  const crossingTiles = new Set(crossings.map((x) => `${x.row},${x.col}`));
+  for (const k of hole ?? []) if (!crossingTiles.has(k)) fp.tiles.add(k);
   const subFile = path.join(path.dirname(mcOver), `${lastSeg(gw.target)}.md`);
   if (!existsSync(subFile)) return [];
   const sub = parseMcOkf(await readFile(subFile, "utf8"), grid.region, lastSeg(gw.target));
@@ -294,11 +229,19 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
   const mcOver = mcDir.find((p) => existsSync(p));
   if (!mcOver) return grid.gateways;
   const over = parseMcOkf(await readFile(mcOver, "utf8"), grid.region, regionSlug);
-  // All marcopolo-overworld cross-links (used both as landmarks and, per sub-map,
-  // as the entrance cluster).
+  const layer = overworldLayer(over);
+  const reg = registerLayer(grid, layer, over);
+  if (!reg) return grid.gateways;
+  const affine = reg.affine;
   const mcCells = over.cellLinks.map((l) => ({ row: l.row, col: l.col, page: l.page }));
-  const affine = fitAffine(landmarks(grid, mcCells));
-  if (!affine) return grid.gateways;
+  // Tiles that stay walkable inside any body: gateway tiles of other targets (Lutetia's
+  // footprint covers the "Hafen Lutetia" harbour).
+  const keepFor = (target: string) => new Set(grid.gateways.filter((g) => g.target && g.target !== target).map((g) => `${g.row},${g.col}`));
+  const block = (tiles: Iterable<string>, target: string) => {
+    const keep = keepFor(target);
+    grid.blocked ??= Array.from({ length: grid.rows }, () => new Array<boolean>(grid.cols).fill(false));
+    for (const k of tiles) { if (keep.has(k)) continue; const [r, c] = k.split(",").map(Number); if (grid.blocked[r]) grid.blocked[r][c] = true; }
+  };
 
   const out: Gateway[] = [];
   const supersede = new Set<string>(); // labels of original gateways we replace
@@ -314,7 +257,7 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
       // A city has several identical point gateways, so process the target once.
       if (!processed.has(gw.target)) {
         processed.add(gw.target);
-        const city = await cityGateways(grid, kbDir, over, mcOver, regionSlug, gw);
+        const city = await cityGateways(grid, kbDir, over, mcOver, regionSlug, gw, holeBody(layer, reg, lastSeg(gw.target))?.tiles);
         if (city.length) { out.push(...city); supersede.add(gw.label); }
       }
       continue;
@@ -352,21 +295,18 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     // AND the two overworld clusters must land on nearly the same gif tile (a tight
     // affine proximity), which rejects a sub-map that has no real marcopolo counterpart.
     if (!best || bestScore >= 4) continue;
-    // The sub-map's overworld FOOTPRINT comes straight from the gif's own imagemap
-    // (the whole-region rects buildGridMap discards). Mark it impassable so the
-    // router can't cut STRAIGHT THROUGH the forest/village — the gif paints it as
-    // walkable grass, which is exactly why routes used to "enter" on an interior,
-    // impenetrable tile. With the body blocked, the router must reach a real EDGE, and
-    // each edge carries the matching wiki entrance. When the gif marks no footprint
-    // (an ordinary point gateway), fall back to placing relative to the point.
-    if (fp) {
-      grid.blocked ??= Array.from({ length: grid.rows }, () => new Array<boolean>(grid.cols).fill(false));
-      for (const k of fp.tiles) { const [r, c] = k.split(",").map(Number); grid.blocked[r][c] = true; }
-    }
-    // marcopolo supplies which SIDES carry penetrable entrances and how many; the
-    // gif footprint supplies WHERE each side's edge is. An entrance on the west edge
-    // sits just west of the forest, so the router approaching from the west (e.g.
-    // the harbour) reaches it first and enters the matching `1 Rand` room.
+    // The solid body is marcopolo's hole for this sub-map, registered onto the gif —
+    // not the imagemap rect or the painted area, which also cover walkable forest.
+    // Its entrances are the rim portals at their registered tiles. Without a hole
+    // nothing is blocked and entrances go to their affine position.
+    const body = holeBody(layer, reg, best[0].page);
+    if (body) block(body.tiles, gw.target);
+    const placeEntrance = (e: McEntrance): [number, number] | null => {
+      const t = body ? body.proj(...layer.tileOf(e.row, e.col)) : apply(affine, [e.col, e.row]);
+      const [c, r] = [Math.round(t[0]), Math.round(t[1])];
+      return grid.blocked?.[r]?.[c] ? snapFree(grid, c, r) : snap(grid, c, r);
+    };
+    // marcopolo supplies which SIDES carry penetrable entrances, how many, and where.
     const mSide = bySide(best);
     let injected = 0;
     for (const s of ["N", "E", "S", "W"] as Side[]) {
@@ -379,7 +319,7 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
       const n = ws.length; // == min(marco, wiki), only marco-confirmed penetrable
       for (let i = 0; i < n; i++) {
         // Geometric position from marcopolo (ms[i]); entry ROOM from the wiki (ws[i]).
-        const tile = fp ? placeByAffine(grid, fp.bbox, affine, s, ms[i]) : placeOnSide(grid, gw.col, gw.row, s, i, n);
+        const tile = placeEntrance(ms[i]);
         if (!tile) continue;
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,
@@ -391,28 +331,69 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     }
     if (injected) supersede.add(gw.label);
   }
-  // Drop the original single gateways we replaced with per-entrance ones.
-  return [...grid.gateways.filter((g) => !supersede.has(g.label)), ...out];
+  const result = [...grid.gateways.filter((g) => !supersede.has(g.label)), ...out];
+  applyMarcoEdges(grid, over, layer, reg, result);
+  return result;
+}
+
+/** marcopolo's hole for sub-map `page`, projected onto gif tiles as one rigid piece
+ *  ("r,c" keys) plus the projection it used, or null without a registered hole. */
+function holeBody(layer: McTileLayer, reg: Registration, page: string): { tiles: Set<string>; proj: (tr: number, tc: number) => [number, number] } | null {
+  const hole = layer.holes.find((h) => h.pages[0] === page);
+  if (!hole) return null;
+  const proj = reg.rigid([...hole.tiles, ...hole.portals.map((p): [number, number] => [p.tr, p.tc])]);
+  if (!proj) return null;
+  return { tiles: new Set(hole.tiles.map(([tr, tc]) => { const [c, r] = proj(tr, tc); return `${r},${c}`; })), proj };
+}
+
+/** A letter that occurs at most this often (per colour) on the overworld marks a place,
+ *  not terrain (Mixnix's cyan `M`, not the sea's `M`). */
+const RARE = 6;
+
+/** marcopolo's exact edges at a gateway/POI tile: the marcopolo cell registered on (or
+ *  right next to) the tile — a rare letter, i.e. a place — gives the moves the map
+ *  draws; the others are blocked (Mixnix's `M` connects only east). Skipped where the
+ *  tile is unregistered, the restriction is all-or-nothing, or no open move reaches a
+ *  walkable tile. City gates already carry theirs from `overworldGateDirs`. */
+function applyMarcoEdges(grid: GridMap, over: McMap, layer: McTileLayer, reg: Registration, gateways: Gateway[]): void {
+  const lines = over.ascii.split("\n");
+  const color = new Map(over.cellColors.map((c) => [`${c.row},${c.col}`, c.color]));
+  const kind = (tr: number, tc: number) => {
+    const [r, c] = layer.charOf(tr, tc);
+    return `${layer.letter(tr, tc)}${color.get(`${r},${c}`) ?? ""}`;
+  };
+  const freq = new Map<string, number>();
+  const onGif = new Map<string, [number, number]>();
+  for (let tr = 0; tr < layer.rows; tr++) for (let tc = 0; tc < layer.cols; tc++) {
+    if (!layer.letter(tr, tc)) continue;
+    freq.set(kind(tr, tc), (freq.get(kind(tr, tc)) ?? 0) + 1);
+    const g = reg.toGif(tr, tc);
+    if (g) onGif.set(`${g[0]},${g[1]}`, [tr, tc]);
+  }
+  const walkable = (c: number, r: number) => r >= 0 && c >= 0 && r < grid.rows && c < grid.cols && grid.tiles[r][c] !== "ocean" && !grid.blocked?.[r]?.[c];
+  const OFF: Record<string, [number, number]> = {
+    norden: [-1, 0], sueden: [1, 0], osten: [0, 1], westen: [0, -1],
+    nordosten: [-1, 1], nordwesten: [-1, -1], suedosten: [1, 1], suedwesten: [1, -1],
+  };
+  for (const g of gateways) {
+    if (g.blockedDirs?.length) continue;
+    let cell: [number, number] | null = null, bestD = Infinity;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const m = onGif.get(`${g.col + dc},${g.row + dr}`);
+      if (!m || (freq.get(kind(...m)) ?? 0) > RARE) continue;
+      const d = Math.abs(dr) + Math.abs(dc);
+      if (d < bestD) { bestD = d; cell = m; }
+    }
+    if (!cell) continue;
+    const blocked = cellBlockedDirs(lines, ...layer.charOf(...cell));
+    if (!blocked || blocked.length < 1 || blocked.length > 7) continue;
+    const open = Object.keys(OFF).filter((d) => !blocked.includes(d));
+    if (!open.some((d) => walkable(g.col + OFF[d][1], g.row + OFF[d][0]))) continue;
+    g.blockedDirs = blocked;
+  }
 }
 
 const sideName = (s: Side) => ({ N: "Nordrand", E: "Ostrand", S: "Südrand", W: "Westrand" }[s]);
-
-/** Position the i-th entrance (of `count`) on `side` of the forest, RELATIVE to the
- *  wiki forest gateway at (ax,ay): offset one small step off the anchor toward that
- *  side, and spread the entrances along the side's axis (W/E ordered N→S by row;
- *  N/S ordered W→E by col — matching subMapEntrances ordinals). Snapped to the
- *  nearest walkable tile. Absolute marco coords are deliberately NOT used — only the
- *  approach SIDE matters, and that is reliable across the two differently-drawn maps. */
-function placeOnSide(grid: GridMap, ax: number, ay: number, side: Side, i: number, count: number): [number, number] | null {
-  const D = 3, STEP = 2;
-  const off = Math.round((i - (count - 1) / 2) * STEP);
-  let c = ax, r = ay;
-  if (side === "W") { c = ax - D; r = ay + off; }
-  else if (side === "E") { c = ax + D; r = ay + off; }
-  else if (side === "N") { r = ay - D; c = ax + off; }
-  else { r = ay + D; c = ax + off; } // S
-  return snap(grid, c, r);
-}
 
 /** Keep `n` items from `arr`, evenly spaced and centred (n=1 → the middle item),
  *  used when marcopolo says a side has fewer real entrances than the wiki marks. */

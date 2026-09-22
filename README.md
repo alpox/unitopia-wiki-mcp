@@ -165,8 +165,8 @@ See [QWEN_CODE.md](./QWEN_CODE.md).
 
 - **`none`** (default) — **BM25 only**. Pure JS, no model, no vector index, no native deps, fully
   offline. This is what the `npx` MCP install uses. `hnswlib-node` and `@huggingface/transformers` are
-  `optionalDependencies`, so a machine without a C++ toolchain installs fine (the native build simply
-  fails and is skipped — BM25 never needs it).
+  optional **peer** dependencies, so the `npx` install never downloads them (~500 MB of ONNX runtime)
+  or compiles the native addon. Install them yourself for `local`/`ollama`; the docker image does.
 - **`local`** — hybrid: fuse BM25 with dense vectors from an in-process ONNX model
   (`LOCAL_EMBED_MODEL`, default `Xenova/multilingual-e5-base`), fetched once from HuggingFace and cached.
 - **`ollama`** — hybrid, embedding via the ollama-hosted `EMBED_MODEL`.

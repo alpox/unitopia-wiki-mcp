@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
 import { config } from "./config.js";
+import { saveJson } from "./persist.js";
 
 /** One page in the knowledge bundle, captured at index-build time. */
 export interface CatalogEntry {
@@ -143,8 +144,10 @@ export async function buildCatalog(): Promise<Catalog> {
 }
 
 /** Build the in-memory catalog index directly from the KB (no catalog.json). */
-export async function buildCatalogInMemory(): Promise<CatalogIndex> {
-  return new CatalogIndex(await computeCatalog());
+export async function buildCatalogInMemory(keep = false): Promise<CatalogIndex> {
+  const catalog = await computeCatalog();
+  if (keep) await saveJson(catalogPath(), catalog).catch(() => {});
+  return new CatalogIndex(catalog);
 }
 
 /** In-memory catalog with lookup structures, loaded at server start. */

@@ -107,6 +107,6 @@ export async function loadOkfDocuments(): Promise<Document[]> {
     }
   }
 
-  console.log(`[load] ${docs.length} sections from ${files.length} wiki pages.`);
+  console.error(`[load] ${docs.length} sections from ${files.length} wiki pages.`);
   return docs;
 }

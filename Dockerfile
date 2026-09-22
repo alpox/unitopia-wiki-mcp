@@ -13,6 +13,9 @@ WORKDIR /app
 COPY package.json package-lock.json .npmrc tsconfig.json ./
 COPY src ./src
 RUN npm install
+# The dense-vector backend (EMBED_BACKEND=local) is an optional peer, so the npx MCP
+# install never downloads it; this image needs it.
+RUN npm install --no-save @huggingface/transformers@^3.8.1 hnswlib-node@^3.0.0
 
 ENV NODE_ENV=production \
     EMBED_BACKEND=local \

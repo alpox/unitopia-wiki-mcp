@@ -41,8 +41,13 @@ export async function initBackends(): Promise<Backends> {
     store = await loadIndex();
   }
 
+  // An installed package runs from its bundled KB (see bin/unitopia-kb-mcp.mjs) and
+  // keeps what it builds under its own install dir, so later launches load it; a
+  // reinstall replaces that dir together with the code and the archive.
+  const keep = process.env.UNITOPIA_KB_BUNDLED === "1";
+
   // Catalog: prebuilt JSON (docker) or built in memory from the KB (embedded).
-  const catalog = (await loadCatalog()) ?? (await buildCatalogInMemory());
+  const catalog = (await loadCatalog()) ?? (await buildCatalogInMemory(keep));
   log(`[backends] catalog ready (${catalog.size} pages, exact-title + category lookup)`);
   if (store) {
     const { loadCategoryVectors } = await import("./catVectors.js");
@@ -54,7 +59,7 @@ export async function initBackends(): Promise<Backends> {
   }
 
   // Nav: prebuilt JSON (docker) or built in memory from the KB (embedded).
-  const nav = (await loadNavIndex()) ?? (await buildNavInMemory());
+  const nav = (await loadNavIndex()) ?? (await buildNavInMemory(keep));
   log(`[backends] nav index ready (${nav.size} map rooms, deterministic routing)`);
 
   const hybrid = new HybridSearch(docs, store);

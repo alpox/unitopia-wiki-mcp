@@ -42,6 +42,10 @@ function ensureKb() {
   const stampFile = path.join(dataDir, ".kb-archive.sha256");
   const archive = path.join(pkgRoot, "data", "unitopia-kb.tar.gz");
   process.env.KB_DIR = kbDir;
+  // The server may keep the catalog + nav index it builds from this KB (see
+  // src/backends.ts), so later launches skip rebuilding them.
+  process.env.UNITOPIA_KB_BUNDLED = "1";
+  const indexDir = process.env.INDEX_DIR || path.join(pkgRoot, "index");
 
   if (!fs.existsSync(archive)) {
     if (!fs.existsSync(path.join(kbDir, "index.md")))
@@ -59,6 +63,7 @@ function ensureKb() {
     ? `knowledgebase archive changed — refreshing ${dataDir} …`
     : `first run — extracting knowledgebase into ${dataDir} …`);
   fs.rmSync(kbDir, { recursive: true, force: true });
+  fs.rmSync(indexDir, { recursive: true, force: true }); // built from the old KB
   fs.mkdirSync(dataDir, { recursive: true });
   execFileSync("tar", ["-xzf", archive, "-C", dataDir], { stdio: ["ignore", "ignore", "inherit"] });
   fs.writeFileSync(stampFile, want);

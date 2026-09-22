@@ -10,25 +10,11 @@
 import type { McMap, McLegendEntry } from "./extract.js";
 import type { NavEdge, NavNode } from "../graph/types.js";
 import { edge } from "../graph/types.js";
+import { OFF, axesOf } from "./connectors.js";
 
-const OFF: Record<string, [number, number]> = {
-  E: [0, 1], W: [0, -1], N: [-1, 0], S: [1, 0], NE: [-1, 1], SW: [1, -1], NW: [-1, -1], SE: [1, 1],
-};
 const COMPASS: Record<string, string> = {
   E: "osten", W: "westen", N: "norden", S: "sueden", NE: "nordosten", SW: "suedwesten", NW: "nordwesten", SE: "suedosten",
 };
-
-/** The connector glyphs and which travel axes each one carries. Arrows and dots
- *  are "flexible" (carry any axis) so a run like `..>` or a bare `^` still links
- *  its two endpoints; the *command* is decided separately from the glyphs seen. */
-function axesOf(ch: string): string[] | "any" | null {
-  if (ch === "-") return ["E", "W"];
-  if (ch === "|") return ["N", "S"];
-  if (ch === "/") return ["NE", "SW"];
-  if (ch === "\\") return ["NW", "SE"];
-  if (".'^v<>".includes(ch)) return "any";
-  return null;
-}
 
 const short = (desc: string): string => desc.split(/[:(\n]/)[0].replace(/\s+/g, " ").trim();
 
@@ -117,7 +103,7 @@ export function buildMcGraph(m: McMap): Built {
     for (let c = 0; c < W; c++) {
       if (cellNode.has(`${r},${c}`)) continue;
       const ch = at(r, c);
-      if (!/^[A-Za-z0-9]$/.test(ch) || legendKeys.has(ch) || linkAt.has(`${r},${c}`)) continue;
+      if (!/^[A-Za-z0-9]$/.test(ch) || ch === "X" || legendKeys.has(ch) || linkAt.has(`${r},${c}`)) continue;
       let wires = 0;
       for (const dir of Object.keys(OFF)) {
         const g = at(r + OFF[dir][0], c + OFF[dir][1]);
@@ -246,7 +232,7 @@ function commandFor(dir: string, glyphs: string[], climb: boolean): string | nul
   const horizFlow = glyphs.includes("<") || glyphs.includes(">");
   if (vert) return dir === "N" ? "hoch" : dir === "S" ? "runter" : COMPASS[dir];
   if (horizFlow && climb) return null; // sideways-drawn climb: geometry direction is unreliable
-  if (glyphs.includes(".")) return null; // dotted/current: no clear command
+  if (glyphs.includes(".") || glyphs.includes("'")) return null; // dotted/current: no clear command
   return COMPASS[dir];
 }
 
@@ -258,7 +244,7 @@ function hintFor(dir: string, glyphs: string[], climb: boolean): string | null {
   const vert = glyphs.includes("^") || glyphs.includes("v");
   const horizFlow = glyphs.includes("<") || glyphs.includes(">");
   if ((vert || horizFlow) && climb) return "evtl. klettern oder Sonderbefehl – genauer Befehl unklar";
-  if (glyphs.includes(".")) return `Richtung ${COMPASS[dir]} – Befehl unklar`;
+  if (glyphs.includes(".") || glyphs.includes("'")) return `Richtung ${COMPASS[dir]} – Befehl unklar`;
   return null;
 }
 
