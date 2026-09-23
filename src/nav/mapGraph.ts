@@ -8,6 +8,7 @@
  */
 import type { NavNode, NavEdge } from "./graph/types.js";
 import { edge } from "./graph/types.js";
+import { MAP_OVERRIDES } from "./mapOverrides.js";
 
 const BOX = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬╤╟╢╧";
 /** Internal glyph for a diagonal crossing (`X` in a `o-o-o`/`|X|X|` mesh, `◊`): two
@@ -136,7 +137,33 @@ interface MapGroup {
   mapLines: string[];
   labelName: Map<string, string>;
   labelAnchor: Map<string, string[]>;
+  /** Cells corrected by hand to crossovers (see mapOverrides.ts). */
+  crossovers: [number, number][];
 }
+
+/** The page slug of a KB page, from its frontmatter title ("Tadmor" → "tadmor"). */
+const pageSlugOf = (md: string) =>
+  (/^title:\s*"?(.+?)"?\s*$/m.exec(md)?.[1] ?? "").toLowerCase().replace(/[^a-z0-9äöüß]+/g, "-").replace(/^-|-$/g, "");
+
+/** Cells of `mapLines` that a `MAP_OVERRIDES` entry for `page` marks as crossovers. */
+function overrideCrossovers(page: string, mapLines: string[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const o of MAP_OVERRIDES) {
+    if (o.kind !== "crossover" || o.page !== page) continue;
+    let k = -1;
+    for (let n = 0; n <= (o.occurrence ?? 0) && (n === 0 || k >= 0); n++) k = o.row.indexOf(o.glyph, k + 1);
+    if (k < 0) continue;
+    mapLines.forEach((line, r) => { const at = line.indexOf(o.row); if (at >= 0) out.push([r, at + k]); });
+  }
+  return out;
+}
+
+/** A map row with the `rowFix` overrides for `page` applied. */
+function fixRow(page: string, line: string): string {
+  for (const o of MAP_OVERRIDES) if (o.kind === "rowFix" && o.page === page && line.includes(o.row)) line = line.replace(o.row, o.fixed);
+  return line;
+}
+
 interface GNode {
   gid: string; gi: number; r: number; c: number; cEnd?: number;
   label: string | null; name: string | null; anchors?: string[];
@@ -194,7 +221,8 @@ export function unknownGlyphs(md: string): Map<string, number> {
 }
 
 function splitGroups(md: string, conn: ConnGlyphs = connectorGlyphs(md)): MapGroup[] {
-  const lines = md.split("\n").map((l) => readRow(l, conn));
+  const page = pageSlugOf(md);
+  const lines = md.split("\n").map((l) => fixRow(page, readRow(l, conn)));
   const groups: MapGroup[] = [];
   let curHeading = "";
   let i = 0;
@@ -243,7 +271,7 @@ function splitGroups(md: string, conn: ConnGlyphs = connectorGlyphs(md)): MapGro
         } else { miss++; last = null; }
         j++;
       }
-      if (mapLines.length >= 3) groups.push({ anchor: curHeading, mapLines, labelName, labelAnchor });
+      if (mapLines.length >= 3) groups.push({ anchor: curHeading, mapLines, labelName, labelAnchor, crossovers: overrideCrossovers(page, mapLines) });
     } else i++;
   }
   return groups;
@@ -444,6 +472,7 @@ function buildGraph(groups: MapGroup[], conn: ConnGlyphs = EMPTY_CONN) {
       const vW = isWater(walkAxis(r, c, "N")) || isWater(walkAxis(r, c, "S"));
       if (hW !== vW) crossover.add(`${r},${c}`); // exactly one crossing line is water → crossover
     }
+    for (const [r, c] of g.crossovers) crossover.add(`${r},${c}`);
     for (const id of local) {
       const n = nodes.get(id)!;
       const ce = n.cEnd ?? n.c;

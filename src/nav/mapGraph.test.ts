@@ -170,6 +170,15 @@ test("one-way arrows are directed (stratos `14->12<-14`)", () => {
   assert.ok(!has("12", "14"), "no way back against the arrow");
 });
 
+test("map override: Tadmor's Westtor crossing is the wall over the road, not a junction", () => {
+  const g = pageGraphIR(read("tadmor"), "tadmor", "vaniorh");
+  const lbl = new Map(g.nodes.map((n) => [n.id, n.sources[0]?.label]));
+  const w = g.nodes.find((n) => n.sources[0]?.label === "W" && n.id.includes("#0:"))!;
+  const out = g.edges.filter((e) => e.from === w.id).map((e) => lbl.get(e.to));
+  assert.ok(!out.includes("14"), "no way from the Westtor up onto the wall");
+  assert.ok(g.edges.some((e) => lbl.get(e.to) === "14" && e.command === "hoch"), "the wall (14) is reached by `hoch`");
+});
+
 test("a long row of capitals does not hang the label-row check (wagenrennen)", () => {
   const t = Date.now();
   listRooms(read("wagenrennen"));
