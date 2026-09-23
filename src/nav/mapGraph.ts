@@ -1022,6 +1022,18 @@ export function subMapEntrances(md: string, regionSlug: string): SubMapEntrance[
   return out;
 }
 
+/** Lookup for the room one plain step from room (gi, r, c) in compass direction `dir`
+ *  (N/E/S/W), or null — e.g. the first room past a sub-map's edge room. */
+export function stepFrom(md: string): (gi: number, r: number, c: number, dir: string) => { name: string | null; r: number; c: number } | null {
+  const conn = connectorGlyphs(md);
+  const { nodes, adj } = buildGraph(splitGroups(md, conn), conn);
+  return (gi, r, c, dir) => {
+    const e = (adj.get(`${gi}:${r},${c}`) ?? []).find((x) => x.dir === COMPASS[dir] && !x.hidden && !x.transition);
+    const n = e ? nodes.get(e.to) : undefined;
+    return n ? { name: n.name, r: n.r, c: n.c } : null;
+  };
+}
+
 export interface PerimeterRoom {
   name: string; label: string; r: number; c: number;
   side: "N" | "E" | "S" | "W";

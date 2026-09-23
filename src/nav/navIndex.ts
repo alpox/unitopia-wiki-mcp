@@ -698,18 +698,19 @@ export class NavIndex {
         const leg = await this.routeByForms(page, fromForms, toForms);
         if (!leg.ok) return null; // this page-path doesn't actually connect
         const legSteps = leg.steps ?? [];
-        // A map seam is a normal walk, not a separate action: annotate the step that
-        // carries you across (the first move on the new map) rather than inserting a
-        // directionless teleport step. If the new leg has no move of its own (you
-        // enter exactly at its gateway room), hang the note on the previous step; only
-        // a truly step-less crossing falls back to a bare marker.
+        // A map seam is a normal walk, not a separate action. The exit room and the
+        // entry room are the same place, so the step that ARRIVES at the exit (the
+        // city gate, the forest's rim tile) is the one that puts you on the new map —
+        // annotate that step. With no step before the seam, annotate the first step
+        // after it; only a truly step-less crossing falls back to a bare marker.
         if (i > 0) {
           // A coord-addressed entry ("Rand@66,0") pins the node for routing but must
           // show its plain name to the user.
           const entryLabel = entry!.replace(/@\d+,\d+$/, "");
           const label = `Übergang nach ${areaName(page)} (${entryLabel})`;
-          if (legSteps.length) legSteps[0] = { ...legSteps[0], transition: label };
-          else if (steps.length) steps[steps.length - 1] = { ...steps[steps.length - 1], transition: label };
+          const join = (s: RouteStep) => ({ ...s, transition: s.transition ? `${s.transition}; ${label}` : label });
+          if (steps.length) steps[steps.length - 1] = join(steps[steps.length - 1]);
+          else if (legSteps.length) legSteps[0] = join(legSteps[0]);
           else steps.push({ dir: null, hidden: false, transition: label, toName: entryLabel });
         }
         steps.push(...legSteps);

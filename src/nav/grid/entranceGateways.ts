@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { GridMap, Gateway } from "./types.js";
-import { subMapEntrances, perimeterRooms, deumlaut, type SubMapEntrance, type PerimeterRoom } from "../mapGraph.js";
+import { subMapEntrances, perimeterRooms, stepFrom, deumlaut, type SubMapEntrance, type PerimeterRoom } from "../mapGraph.js";
 import { parseMcOkf } from "../marcopolo/okf.js";
 import { penetrableEntrances, bySide, borderGateTokens, landBorderLabels, overworldGateDirs, cellBlockedDirs, type McEntrance, type Side } from "../marcopolo/entrances.js";
 import type { McMap } from "../marcopolo/extract.js";
@@ -250,7 +250,8 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
     if (!gw.target || gw.anchor) continue; // only whole-sub-map gateways
     const targetFile = path.join(kbDir, `${gw.target}.md`);
     if (!existsSync(targetFile)) continue;
-    const wikiEnt = subMapEntrances(await readFile(targetFile, "utf8"), regionSlug);
+    const wikiMd = await readFile(targetFile, "utf8");
+    const wikiEnt = subMapEntrances(wikiMd, regionSlug);
     if (wikiEnt.length < 1) {
       // No region back-link edge rooms → not a forest. It may still be a CITY entered
       // by road (Lutetia): block its footprint and enter via the gif road crossings.
@@ -306,6 +307,15 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
       const [c, r] = [Math.round(t[0]), Math.round(t[1])];
       return grid.blocked?.[r]?.[c] ? snapFree(grid, c, r) : snap(grid, c, r);
     };
+    // The wiki edge room links back to the region: it IS the overworld tile the
+    // gateway stands on (the shared overlap, like Lutetia's Stadttor), so the route
+    // enters the room one step past it (gallierwald `1 Rand` → the first `o`).
+    const step = stepFrom(wikiMd);
+    const INWARD: Record<Side, string> = { N: "S", S: "N", W: "E", E: "W" };
+    const entryPast = (e: SubMapEntrance, s: Side) => {
+      const p = step(e.group, e.r, e.c, INWARD[s]);
+      return p ? `${p.name ?? e.name}@${p.r},${p.c}` : `${e.name}@${e.r},${e.c}`;
+    };
     // marcopolo supplies which SIDES carry penetrable entrances, how many, and where.
     const mSide = bySide(best);
     let injected = 0;
@@ -324,7 +334,7 @@ export async function entranceGateways(grid: GridMap, kbDir: string): Promise<Ga
         out.push({
           col: tile[0], row: tile[1], target: gw.target, anchor: null,
           label: `${gw.label} (${sideName(s)} ${i + 1})`,
-          entry: `${ws[i].name}@${ws[i].r},${ws[i].c}`,
+          entry: entryPast(ws[i], s),
         });
         injected++;
       }
