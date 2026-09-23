@@ -207,6 +207,9 @@ async function cityGateways(grid: GridMap, kbDir: string, over: McMap, mcOver: s
       out.push({
         col: t.col, row: t.row, target: gw.target, anchor: null,
         label: `${gw.label} (${sideName(s)} ${++i})`, entry: `${room.name}@${room.r},${room.c}`,
+        // Leaving, you pass the gate room itself (walked in-game: Lutetia east needs
+        // Brücke → Stadttor → overworld, one `osten` more than leaving from the Brücke).
+        ...(room !== gate ? { exit: `${gate.name}@${gate.r},${gate.c}` } : {}),
         ...(gd?.blockedDirs.length ? { blockedDirs: gd.blockedDirs } : {}),
       });
     }

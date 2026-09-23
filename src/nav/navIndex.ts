@@ -511,7 +511,7 @@ export class NavIndex {
           const gate = (linksByPage.get(tgt) ?? []).find((l) => l.targets.includes(regionSlug))?.name;
           const cityRoom = gw.entry ?? gate ?? this.bestRoomOn(tgt, gw.anchor ?? gw.label) ?? gw.label;
           add(grid.page, { to: tgt, exit: gw.label, entry: cityRoom }); // enter the city
-          add(tgt, { to: grid.page, exit: cityRoom, entry: gw.label }); // step back onto the overworld
+          add(tgt, { to: grid.page, exit: gw.exit ?? cityRoom, entry: gw.label }); // step back onto the overworld
         }
         // Overlap seam onto the region's own ASCII sub-maps. Name-matching finds
         // the FEATURE the tile marks (the Gebirge's "Auf einer Wolke"). Usually
