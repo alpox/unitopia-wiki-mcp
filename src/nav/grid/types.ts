@@ -18,10 +18,6 @@ export interface Gateway {
    *  identically-named edge rooms. When set, the seam uses it verbatim instead of
    *  the structural-gate / name-match entry. */
   entry?: string;
-  /** The room a route LEAVES the sub-map from to reach this gateway, when that is not
-   *  `entry`: a city is entered past its gate (Lutetia: into the Brücke) but left
-   *  through it (Brücke → Stadttor, then onto the overworld). Coordinate-addressed. */
-  exit?: string;
   /** Compass directions the router may NOT leave this tile by — imported from the
    *  marcopolo overworld's connector glyphs at the matching entrance cell (e.g. Lutetia's
    *  east Stadttor has no NE connector, so `["nordosten"]`). Marcopolo's exact edges,

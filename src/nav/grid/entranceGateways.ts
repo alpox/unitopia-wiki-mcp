@@ -207,9 +207,6 @@ async function cityGateways(grid: GridMap, kbDir: string, over: McMap, mcOver: s
       out.push({
         col: t.col, row: t.row, target: gw.target, anchor: null,
         label: `${gw.label} (${sideName(s)} ${++i})`, entry: `${room.name}@${room.r},${room.c}`,
-        // Leaving, you pass the gate room itself (walked in-game: Lutetia east needs
-        // Brücke → Stadttor → overworld, one `osten` more than leaving from the Brücke).
-        ...(room !== gate ? { exit: `${gate.name}@${gate.r},${gate.c}` } : {}),
         ...(gd?.blockedDirs.length ? { blockedDirs: gd.blockedDirs } : {}),
       });
     }
@@ -388,20 +385,29 @@ function applyMarcoEdges(grid: GridMap, over: McMap, layer: McTileLayer, reg: Re
     norden: [-1, 0], sueden: [1, 0], osten: [0, 1], westen: [0, -1],
     nordosten: [-1, 1], nordwesten: [-1, -1], suedosten: [1, 1], suedwesten: [1, -1],
   };
+  const taken = new Set(gateways.map((g) => `${g.col},${g.row}`));
   for (const g of gateways) {
     if (g.blockedDirs?.length) continue;
-    let cell: [number, number] | null = null, bestD = Infinity;
+    let cell: [number, number] | null = null, at: [number, number] = [g.col, g.row], bestD = Infinity;
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
       const m = onGif.get(`${g.col + dc},${g.row + dr}`);
       if (!m || (freq.get(kind(...m)) ?? 0) > RARE) continue;
       const d = Math.abs(dr) + Math.abs(dc);
-      if (d < bestD) { bestD = d; cell = m; }
+      if (d < bestD) { bestD = d; cell = m; at = [g.col + dc, g.row + dr]; }
     }
     if (!cell) continue;
+    // The place stands where marcopolo draws it: the gif can be a tile off (Mixnix's
+    // hut is drawn at 58,21, but walked in-game it is at marcopolo's 59,21). Only wiki
+    // gateways move, only where the registration is reliable, and only onto a free,
+    // walkable tile.
+    const move = !g.entry && (at[0] !== g.col || at[1] !== g.row) && reg.score >= 0.8 && reg.conf(...cell) >= 0.9 &&
+      walkable(...at) && !taken.has(`${at[0]},${at[1]}`);
+    const [c, r] = move ? at : [g.col, g.row];
     const blocked = cellBlockedDirs(lines, ...layer.charOf(...cell));
     if (!blocked || blocked.length < 1 || blocked.length > 7) continue;
     const open = Object.keys(OFF).filter((d) => !blocked.includes(d));
-    if (!open.some((d) => walkable(g.col + OFF[d][1], g.row + OFF[d][0]))) continue;
+    if (!open.some((d) => walkable(c + OFF[d][1], r + OFF[d][0]))) continue;
+    if (move) { taken.delete(`${g.col},${g.row}`); taken.add(`${c},${r}`); g.col = c; g.row = r; }
     g.blockedDirs = blocked;
   }
 }
