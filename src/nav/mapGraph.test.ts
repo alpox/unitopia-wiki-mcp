@@ -179,6 +179,11 @@ test("map override: Tadmor's Westtor crossing is the wall over the road, not a j
   assert.ok(g.edges.some((e) => lbl.get(e.to) === "14" && e.command === "hoch"), "the wall (14) is reached by `hoch`");
 });
 
+test("map override: the Handelsweg gets the road room missing before Westtor von Tadmor", () => {
+  const ascii = pageMaps(read("handelsweg-borsippa")).map((m) => m.ascii).join("\n");
+  assert.ok(ascii.includes("o--o--o--o--o--o--o--o--T"), "T sits one room further east");
+});
+
 test("a long row of capitals does not hang the label-row check (wagenrennen)", () => {
   const t = Date.now();
   listRooms(read("wagenrennen"));
